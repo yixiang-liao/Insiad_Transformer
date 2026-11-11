@@ -243,7 +243,7 @@ table.shapes .ok{color:var(--pos);font-weight:600}
     </div>
     <div class="langbox">
       <div class="seg" role="group" id="langs">
-        <button type="button" data-l="zh" lang="zh-Hant">繁體中文</button><button type="button" data-l="en" lang="en">English</button><button type="button" data-l="ko" lang="ko">한국어</button>
+        <button type="button" data-l="en" lang="en">English</button><button type="button" data-l="zh" lang="zh-Hant">繁體中文</button><button type="button" data-l="ko" lang="ko">한국어</button>
       </div>
       <div class="example" id="exbox"></div>
     </div>
@@ -952,22 +952,19 @@ narrowQ.addEventListener("change",()=>render());
 const HTMLLANG={en:"en",zh:"zh-Hant-TW",ko:"ko"};
 const langBtns=document.querySelectorAll("#langs button");
 function applyLang(k){
-  if(!LANGS[k])k="zh";setLang(k);
+  if(!LANGS[k])k="en";setLang(k);
   document.documentElement.lang=HTMLLANG[k];
   document.querySelectorAll("[data-i]").forEach(el=>{el.innerHTML=t(el.dataset.i)});
   document.getElementById("langs").setAttribute("aria-label",t("langLabel"));
   langBtns.forEach(b=>b.setAttribute("aria-pressed",b.dataset.l===k));
   document.getElementById("exbox").innerHTML=`<span class="fr">${esc(SRC.join(" "))}</span><span aria-hidden="true">→</span><span class="en">${esc(TGT.join(" "))}</span>`;
   playBtn.textContent=timer?t("pause"):t("autoplay");
-  try{localStorage.setItem("tf-lang",k)}catch(e){}
   buildRail();buildDiagram();
 }
 langBtns.forEach(b=>b.onclick=()=>{stopPlay();applyLang(b.dataset.l);render()});
 function initialLang(){
   const h=location.hash.slice(1);if(LANGS[h])return h;
-  try{const s=localStorage.getItem("tf-lang");if(s&&LANGS[s])return s}catch(e){}
-  const nl=(navigator.language||"").toLowerCase();
-  return nl.startsWith("ko")?"ko":nl.startsWith("zh")?"zh":nl.startsWith("en")?"en":"zh";
+  return "en";
 }
 window.addEventListener("hashchange",()=>{const h=location.hash.slice(1);if(LANGS[h]&&h!==lang){stopPlay();applyLang(h);render()}});
 applyLang(initialLang());render();
