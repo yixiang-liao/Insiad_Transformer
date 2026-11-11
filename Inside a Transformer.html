@@ -1,0 +1,977 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Inside a Transformer</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+KR:wght@400;600;700&family=Noto+Sans+TC:wght@400;600;700&display=swap">
+<style>
+/* Layout: the paper's architecture diagram on the left (live map of where data is), the current layer's explanation and tensors on the right */
+:root{
+  --bg:#EDF0F3; --surface:#FFFFFF; --sunk:#F5F7F9; --ink:#15202B; --muted:#5A6777; --line:#D2D9E1;
+  --accent:#E8590C; --accent-soft:#FDE6D8; --pos:#0B8599; --neg:#C2255C; --cell:#F7F9FB;
+  --enc:#2F6FD0; --dec:#8A4FD1;
+  --cellw:3.6em;
+  --f-emb:#F8D3DA; --f-attn:#FBDDB6; --f-ff:#CFE3F6; --f-norm:#F4EBAE; --f-lin:#DDD4F3; --f-soft:#CDEBD3; --f-frame:#F1F4F7;
+  --display:"Bricolage Grotesque", "Avenir Next", "Noto Sans TC", "Noto Sans KR", system-ui, sans-serif;
+  --body:"IBM Plex Sans", "Noto Sans TC", "Noto Sans KR", system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, "Noto Sans TC", "Noto Sans KR", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0D131A; --surface:#151D27; --sunk:#111821; --ink:#E5ECF2; --muted:#93A1B0; --line:#29343F;
+  --accent:#FF8A3D; --accent-soft:#3A2416; --pos:#3BC9DB; --neg:#F06595; --cell:#1B2430;
+  --enc:#6EA8FF; --dec:#B78CF2;
+  --f-emb:#4A2731; --f-attn:#4A3420; --f-ff:#1F3651; --f-norm:#3E3818; --f-lin:#2F2A4B; --f-soft:#1E3B29; --f-frame:#18212C; color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#0D131A; --surface:#151D27; --sunk:#111821; --ink:#E5ECF2; --muted:#93A1B0; --line:#29343F;
+  --accent:#FF8A3D; --accent-soft:#3A2416; --pos:#3BC9DB; --neg:#F06595; --cell:#1B2430;
+  --enc:#6EA8FF; --dec:#B78CF2;
+  --f-emb:#4A2731; --f-attn:#4A3420; --f-ff:#1F3651; --f-norm:#3E3818; --f-lin:#2F2A4B; --f-soft:#1E3B29; --f-frame:#18212C; color-scheme:dark }
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:15px;line-height:1.55;
+  padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px));padding-block:28px 48px}
+.wrap{max-width:1260px;margin:0 auto;display:flex;flex-direction:column;gap:22px}
+header{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 24px}
+h1{font-family:var(--display);font-weight:800;font-size:clamp(30px,5vw,48px);line-height:1;margin:0;letter-spacing:-.02em;text-wrap:balance}
+h1 em{font-style:normal;color:var(--accent)}
+.lede{margin:8px 0 0;color:var(--muted);max-width:62ch}
+.example{font-family:var(--mono);font-size:14px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.example .fr{color:var(--enc);font-weight:600}
+.example .en{color:var(--dec);font-weight:600}
+.langbox{display:flex;flex-direction:column;gap:8px;align-items:flex-end}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px}
+.seg button{font:inherit;font-size:14px;font-weight:600;border:0;background:transparent;color:var(--ink);padding:6px 14px;border-radius:999px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--surface)}
+.seg button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (max-width:600px){.langbox{align-items:flex-start}}
+.grid{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:22px;align-items:start}
+
+/* paper diagram */
+.diagram{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 10px 14px;position:sticky;top:16px;display:flex;flex-direction:column;gap:8px}
+.diagram summary{display:none;cursor:pointer;font-weight:600;font-size:14px;padding:4px 6px}
+.diagram summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.dhead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:0 6px;font-size:12px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-weight:600}
+.dhead span:last-child{text-transform:none;letter-spacing:0;font-weight:400}
+#paper{width:100%;height:auto;max-height:calc(100vh - 150px);display:block}
+#paper text{font-family:var(--body);fill:var(--ink);pointer-events:none}
+#paper .box{cursor:pointer}
+#paper .box .body{stroke:var(--muted);stroke-width:1;transition:stroke .2s}
+#paper .box:hover .body,#paper .box:focus-visible .body{stroke:var(--accent);stroke-width:2}
+#paper .box:focus{outline:none}
+#paper .box .body.ghost{stroke:transparent}
+#paper .halo{fill:var(--accent);opacity:0}
+#paper .box.on .halo{opacity:.3;animation:halo 1.3s ease-in-out infinite alternate}
+#paper .box.on .body{stroke:var(--accent);stroke-width:2.5}
+#paper .frame .body{fill:var(--f-frame);stroke:var(--muted);stroke-width:1}
+#paper .frame.on .body{stroke:var(--accent);stroke-dasharray:6 4;stroke-width:2}
+#paper .frame.on .halo{opacity:.08;animation:none}
+#paper .ar{fill:none;stroke:var(--muted);stroke-width:1.3;transition:stroke .2s}
+#paper .ar.on{stroke:var(--accent);stroke-width:2.2;stroke-dasharray:5 4;animation:flow .5s linear infinite}
+#paper .loop{opacity:0}
+#paper .loop.on{opacity:1}
+#paper .lbl{font-size:11px}
+#paper .small{font-size:9.5px;fill:var(--muted)}
+#paper .nx{font-family:var(--display);font-weight:700;font-size:15px}
+#paper .side{font-family:var(--display);font-weight:700;font-size:12px;letter-spacing:.08em}
+#paper .dot{fill:var(--accent)}
+@keyframes halo{from{opacity:.12}to{opacity:.38}}
+@keyframes flow{to{stroke-dashoffset:-9}}
+.dlegend{font-size:12px;color:var(--muted);padding:0 6px;line-height:1.45}
+.dlegend b{color:var(--accent)}
+
+/* rail (phone only) */
+.grid > .rail{display:none}
+.rail{position:relative;flex-direction:column;gap:3px;padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px}
+.node{all:unset;cursor:pointer;display:flex;gap:6px;align-items:baseline;padding:5px 8px;border-radius:6px;font-size:13px;color:var(--ink);white-space:nowrap}
+.node .n{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.node:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.node.done{color:var(--muted)}
+.node.on{background:var(--accent);color:#fff;font-weight:600}
+.node.on .n{color:#fff}
+.rail .chap{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;align-self:center;padding:0 4px 0 10px;white-space:nowrap}
+
+/* stage */
+.stage{background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;min-width:0}
+.stage-head{padding:20px 24px 4px;display:flex;flex-direction:column;gap:6px}
+.meta{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-weight:600}
+.part{padding:2px 10px;border-radius:999px;color:#fff;letter-spacing:.08em}
+.part.p-enc{background:var(--enc)} .part.p-dec{background:var(--dec)} .part.p-out{background:var(--accent)} .part.p-all{background:var(--ink);color:var(--surface)}
+.shape{font-family:var(--mono);text-transform:none;letter-spacing:0;background:var(--sunk);border:1px solid var(--line);border-radius:999px;padding:2px 10px;color:var(--ink);font-weight:500}
+h2{font-family:var(--display);font-weight:700;font-size:clamp(24px,3.2vw,32px);margin:0;line-height:1.1;letter-spacing:-.01em;text-wrap:balance}
+.explain{margin:4px 0 0;max-width:68ch}
+.explain p{margin:0 0 8px}
+.analogy{font-size:14px;color:var(--muted);border-left:3px solid var(--accent);padding:2px 0 2px 12px;max-width:66ch;margin:4px 0 0}
+.io{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;margin-top:6px}
+.io span{display:inline-flex;gap:6px;align-items:baseline}
+.io b{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.viz{padding:18px 24px 24px;display:flex;flex-direction:column;gap:18px;min-width:0;min-height:320px}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px 24px;border-top:1px solid var(--line)}
+.btn{font:inherit;font-weight:600;font-size:14px;padding:8px 16px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+.btn:hover{background:var(--sunk)}
+.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.primary{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.btn:disabled{opacity:.4;cursor:default}
+.prog{flex:1;min-width:120px;height:4px;background:var(--line);border-radius:4px;overflow:hidden;display:flex}
+.prog i{display:block;height:100%;background:var(--accent);transition:width .4s}
+.hint{font-size:12px;color:var(--muted)}
+
+/* tensors */
+.eq{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px}
+.op{font-family:var(--display);font-size:26px;color:var(--muted);font-weight:500}
+.mwrap{overflow-x:auto;max-width:100%}
+.mat{display:inline-flex;flex-direction:column;gap:6px}
+.mtitle{font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.04em}
+.mtitle b{font-family:var(--mono);color:var(--ink);font-size:14px;letter-spacing:0;margin-right:6px}
+.mgrid{display:grid;gap:3px;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+.mgrid .rl,.mgrid .cl{color:var(--muted);font-size:11.5px;display:flex;align-items:center}
+.mgrid .rl{justify-content:flex-end;padding-right:6px;white-space:nowrap}
+.mgrid .cl{justify-content:center;white-space:nowrap}
+.c{min-width:var(--cellw);padding:5px 6px;text-align:right;border-radius:4px;background:var(--cell);animation:pop .45s backwards;animation-delay:calc(var(--i,0) * 18ms)}
+.c.masked{background:repeating-linear-gradient(135deg,var(--sunk) 0 4px,var(--line) 4px 6px);color:var(--muted);text-align:center}
+.c.hl{outline:2px solid var(--accent);outline-offset:-1px;font-weight:600}
+.row-hl{color:var(--accent)!important;font-weight:600}
+@keyframes pop{from{opacity:.15;transform:scale(.85)}to{opacity:1;transform:none}}
+.legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:14px;height:14px;border-radius:3px;display:inline-block}
+
+.tokens{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.tok{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);animation:drop .5s backwards;animation-delay:calc(var(--i,0) * 120ms)}
+.tok .w{font-family:var(--mono);font-weight:600;font-size:16px}
+.tok .id{font-family:var(--mono);font-size:11px;color:var(--muted)}
+.tok.fr{border-color:var(--enc)} .tok.fr .w{color:var(--enc)}
+.tok.en{border-color:var(--dec)} .tok.en .w{color:var(--dec)}
+.tok.special .w{color:var(--muted)}
+.tok.blank{border-style:dashed}
+@keyframes drop{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:none}}
+.focus-pick{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
+.chip{font:inherit;font-family:var(--mono);font-size:13px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.calc{font-family:var(--mono);font-size:13px;background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow-x:auto;line-height:1.8;white-space:nowrap}
+.calc .a{color:var(--accent);font-weight:600}
+.say{font-size:15px;background:var(--accent-soft);border-radius:8px;padding:10px 14px;max-width:68ch}
+.cols{display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start}
+.cols > *{min-width:0}
+svg text{font-family:var(--mono)}
+.draw{stroke-dasharray:600;stroke-dashoffset:600;animation:draw .9s forwards;animation-delay:calc(var(--i,0) * 70ms)}
+@keyframes draw{to{stroke-dashoffset:0}}
+.bars{display:flex;flex-direction:column;gap:6px;max-width:560px}
+.bar{display:grid;grid-template-columns:5.5em 1fr 4em;gap:10px;align-items:center;font-family:var(--mono);font-size:13px}
+.bar .t{height:20px;background:var(--sunk);border-radius:4px;overflow:hidden}
+.bar .t i{display:block;height:100%;width:0;background:var(--muted);border-radius:4px;transition:width .9s cubic-bezier(.2,.8,.2,1)}
+.bar.win .t i{background:var(--accent)}
+.bar.win{font-weight:600}
+.bar .p{text-align:right;font-variant-numeric:tabular-nums}
+.sentence{font-family:var(--display);font-size:clamp(22px,4vw,34px);font-weight:700;letter-spacing:-.01em;display:flex;flex-wrap:wrap;gap:.3em;align-items:baseline}
+.sentence .new{color:var(--accent);display:inline-block;animation:drop .5s backwards}
+table.shapes{border-collapse:collapse;font-size:14px;width:100%;max-width:680px}
+table.shapes td,table.shapes th{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+table.shapes th{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+table.shapes td.m{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+table.shapes .ok{color:var(--pos);font-weight:600}
+.stack{display:flex;flex-direction:column-reverse;gap:6px;max-width:360px}
+.blk{border:1px solid var(--line);background:var(--sunk);border-radius:8px;padding:8px 12px;font-size:13px;display:flex;justify-content:space-between;gap:10px;animation:drop .5s backwards;animation-delay:calc(var(--i,0) * 160ms)}
+.blk b{font-family:var(--mono)}
+.blk.real{background:var(--accent-soft);border-color:var(--accent)}
+.note{font-size:13px;color:var(--muted);max-width:68ch}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px}
+.stagebox{border-radius:10px;padding:12px 16px;color:#fff;font-weight:600;display:flex;flex-direction:column;gap:2px;animation:drop .5s backwards;animation-delay:calc(var(--i,0) * 180ms)}
+.stagebox small{font-weight:400;opacity:.9;font-size:12px}
+.stagebox.e{background:var(--enc)} .stagebox.d{background:var(--dec)}
+.shift{display:grid;grid-template-columns:auto repeat(4,minmax(4.6em,1fr));gap:6px 8px;align-items:center;font-family:var(--mono);font-size:14px;max-width:560px}
+.shift .h{font-family:var(--body);font-size:12px;color:var(--muted);font-weight:600;text-align:right}
+.shift .cell{border:1px solid var(--line);border-radius:6px;padding:6px 4px;text-align:center;background:var(--sunk);animation:drop .5s backwards;animation-delay:calc(var(--i,0) * 110ms)}
+.shift .cell.t{border-color:var(--accent);color:var(--accent);font-weight:600}
+.shift .arr{text-align:center;color:var(--accent);font-size:18px;line-height:1}
+.genlog{display:flex;flex-direction:column;gap:8px;max-width:680px}
+.genrow .gi{overflow-wrap:anywhere}
+.genrow{display:grid;grid-template-columns:2.2em minmax(0,1fr) auto;gap:10px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:var(--sunk);font-family:var(--mono);font-size:13.5px;animation:drop .45s backwards}
+.genrow .k{color:var(--muted);font-size:12px}
+.genrow .pick{color:var(--accent);font-weight:700}
+
+/* ---- responsive: laptop / tablet / phone ---- */
+@media (max-width: 1100px){
+  .grid{grid-template-columns:minmax(260px,310px) minmax(0,1fr);gap:16px}
+}
+@media (max-width: 900px){
+  .grid{grid-template-columns:minmax(0,1fr)}
+  .grid > .rail{display:flex;flex-direction:row;overflow-x:auto;scrollbar-width:thin;position:sticky;top:env(safe-area-inset-top, 0px);z-index:5}
+  body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top, 0px);z-index:10;background:var(--bg)}
+  .diagram{position:static}
+  .diagram summary{display:block}
+  #paper{max-height:none;max-width:440px;margin:0 auto}
+  .dlegend{max-width:440px;margin:0 auto}
+}
+@media (max-width: 640px){
+  :root{--cellw:3.1em}
+  body{font-size:14.5px;padding-block:18px 32px}
+  .wrap{gap:14px}
+  header{flex-direction:column;align-items:stretch}
+  .langbox{align-items:stretch}
+  .seg{display:flex}.seg button{flex:1;padding:8px 6px}
+  .example{justify-content:center}
+  .stage-head,.viz{padding-left:14px;padding-right:14px}
+  .viz{gap:14px;min-height:0}
+  .mgrid{font-size:11.5px}
+  .c{padding:4px 5px}
+  .op{font-size:20px}
+  .controls{padding:10px 14px calc(10px + env(safe-area-inset-bottom, 0px));position:sticky;bottom:0;background:var(--surface);border-radius:0 0 12px 12px;z-index:4}
+  .controls .btn{flex:1;padding:9px 8px}
+  #play{flex:0 0 auto}
+  .prog{order:-1;flex-basis:100%}
+  .hint{display:none}
+  .calc{font-size:12px}
+  .say{font-size:14px}
+  .bar{grid-template-columns:4.8em 1fr 3.6em}
+  .genrow{grid-template-columns:1.8em minmax(0,1fr);font-size:12.5px}
+  .genrow > span:last-child{grid-column:2}
+  .stagebox{padding:10px 12px}
+}
+@media (hover: none){ .node,.chip,.btn,.seg button{min-height:40px} }
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+  .draw{stroke-dashoffset:0}
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1 data-i="h1"></h1>
+      <p class="lede" data-i="lede"></p>
+    </div>
+    <div class="langbox">
+      <div class="seg" role="group" id="langs">
+        <button type="button" data-l="zh" lang="zh-Hant">繁體中文</button><button type="button" data-l="en" lang="en">English</button><button type="button" data-l="ko" lang="ko">한국어</button>
+      </div>
+      <div class="example" id="exbox"></div>
+    </div>
+  </header>
+
+  <div class="grid">
+    <nav class="rail" id="rail"></nav>
+    <details class="diagram" id="diag" open>
+      <summary data-i="diagSummary"></summary>
+      <div class="dhead"><span data-i="diagHead"></span><span data-i="diagCite"></span></div>
+      <svg id="paper" viewBox="0 0 440 524" role="group" aria-label="Transformer architecture (Vaswani et al., 2017)"></svg>
+      <div class="dlegend" data-i="diagLegend"></div>
+    </details>
+    <main class="stage">
+      <div class="stage-head" aria-live="polite">
+        <div class="meta"><span class="part" id="part"></span><span id="stepno"></span><span class="shape" id="shape"></span></div>
+        <h2 id="title"></h2>
+        <div class="explain" id="explain"></div>
+      </div>
+      <div class="viz" id="viz"></div>
+      <div class="controls">
+        <button class="btn" id="prev" type="button" data-i="back"></button>
+        <button class="btn primary" id="next" type="button" data-i="next"></button>
+        <button class="btn" id="play" type="button" aria-pressed="false"></button>
+        <div class="prog" aria-hidden="true"><i id="bar"></i></div>
+        <span class="hint" data-i="tip"></span>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+/* ================= interface text ================= */
+const UI={
+en:{
+ h1:"Inside a <em>Transformer</em>",
+ lede:"Watch a tiny Transformer turn a sentence into a question, one layer at a time. Every number on this page is calculated live by a real (very small) trained model.",
+ langLabel:"Language",
+ diagSummary:"Show the architecture diagram from the paper",diagHead:"Architecture",diagCite:"after Vaswani et al., 2017 · Fig. 1",
+ diagLegend:"<b>Orange</b> shows where the data is right now. Data flows from the bottom to the top. Click any box to jump to it. Labels are the paper's original English terms.",
+ back:"← Back",next:"Next step →",autoplay:"▶ Autoplay",pause:"❚❚ Pause",tip:"Tip: use ← → keys",railLabel:"Steps",
+ part:{all:"Overview",enc:"Encoder",dec:"Decoder",out:"Output"},
+ stepOf:(i,n)=>`Step ${i} of ${n}`,
+ q:w=>`"${w}"`,
+ pos:"positive",neg:"negative",legendNote:"Stronger color = bigger number",
+ follow:"Follow word:",looking:"looking ↑",hidden:"hidden",
+ ffnIn:"4 in",ffnHid:n=>`8 neurons · ${n} light up`,ffnOut:"4 out",
+ mean:["grammar","animal","action","which?"],
+ nTokens:n=>`${n} tokens`,nIds:n=>`${n} token IDs`,nVec:n=>`${n} vectors × 4 numbers`,sameSize:s=>`${s} (same size, now with position)`,
+ sio:"sentence in, sentence out",probs:"probabilities",repeatEnd:"repeat until <end>",recap:"recap",
+ embTable:n=>`<b>Embedding table</b>${n} words × 4 numbers`,ourTokens:n=>`<b>E</b>our ${n} tokens`,
+ wordMeaning:"<b>E</b>word meaning",posStamp:"<b>PE</b>position stamp",readyEnc:"<b>X</b>ready for the encoder",
+ peNote:"The paper uses waves of many different speeds across all 512 numbers. We halve the stamp so the toy's word meanings stay easy to see.",
+ learned:"learned",questions:"questions",labels:"labels",messages:"messages",
+ scores:"<b>scores</b>Q·Kᵀ ÷ 2",softmaxRows:"<b>softmax</b>rows add up to 100%",weights:"<b>weights</b>",mixed:"<b>Z</b>mixed messages",
+ addUp:"add up",
+ multihead:`"Multi-head" means the paper runs 8 of these attention steps side by side, each with its own Q, K, V tables, then joins the results. Our toy uses 1.`,
+ xInput:"<b>X</b>input",zAttn:"<b>Z</b>attention",sum:"<b>sum</b>",mean0:"<b>H₁</b>mean 0, spread 1",neurons:"<b>neurons</b>after ReLU",
+ encNotes:"<b>encoder notes</b>sent to the decoder",note:n=>`note ${n}`,toDecoder:"to every decoder block",
+ inList:n=>`The whole input word list of our toy (${n} words)`,outList:n=>`The whole output word list of our toy (${n} words)`,
+ rowIn:"input",rowGuess:"should guess",embedding:"<b>embedding</b>",position:"<b>position</b>",decIn:"<b>Y</b>decoder input",
+ maskScores:"<b>scores with mask</b>",softmax:"<b>softmax</b>",
+ qFromOut:"Q from<br>output",kvFromEnc:"K, V from<br>encoder notes",crossW:"<b>weights</b>rows = output, columns = input",inMixed:"<b>Z</b>input info, mixed",
+ crossNoMask:"There's no mask here: the whole input sentence is already known, so every output position may look at all of it.",
+ crossMixNote:"The notes are not pure single words anymore. Back in step 5 the encoder mixed information across the sentence, so one note can also carry clues about its neighbours. Try the other words above to see where each one looks.",
+ decOut:"<b>decoder output</b>",paperStack:"How the paper stacks them (N = 6)",decBlock:(i,r)=>`Decoder block ${i}${r?" · computed here":""}`,looksNotes:"looks at encoder notes",
+ logits:"<b>scores (logits)</b>",allPos:"<b>all positions</b>",
+ genBtn:"▶ Write it again",genInput:"input:",
+ colIn:"Input",colOut:"Model's output",correct:"✓ correct",wholeTrip:"The whole trip",colSteps:"Steps",colWhat:"What happens",colShape:"Data shape",
+ recap:"recap",
+ rec:["Tokens","Embedding + position","Self-attention","Add & Norm, feed forward, Add & Norm","Output so far, embedded","Masked self-attention + Add & Norm","Cross-attention + Add & Norm","Feed forward + Add & Norm","Linear + Softmax","Repeat until &lt;end&gt;"],
+ encNotesShape:"encoder notes",
+ sayEnc:(a,p,b)=>`<b>${a}</b> gives <b>${p}%</b> of its attention to <b>${b}</b>.`,
+ sayMask:(a,n,p,b)=>`<b>${a}</b> can see ${n===1?"only itself":`${n} words`} and gives <b>${p}%</b> to <b>${b}</b>.`,
+ sayCross:(a,b,p,c)=>`To write the word after <b>${a}</b>, it looks mostly at the input word <b>${b}</b> (${p}%). Its next word should be <b>${c}</b>.`,
+ sayProb:(a,b,p)=>`After <b>${a}</b>, the model guesses <b>${b}</b> with ${p}%.`,
+ stEnc:"Encoder",stEncSub:"reads & takes notes",stDec:"Decoder",stDecSub:"writes word by word",
+ ovHead:["Setting","Our toy","The paper's base model"],
+ ovRows:[["Numbers per word (d<sub>model</sub>)","4","512"],["Encoder blocks / decoder blocks (N)","1 / 1","6 / 6"],["Attention heads","1","8"],["Neurons inside each feed-forward layer","8","2,048"],["Training data","4 sentence pairs","about 4.5 million sentence pairs"]],
+ ovNote:"Switch the language at the top of the page any time; each language has its own tiny model, trained separately. Later models kept only one half: <b>BERT</b> uses just the encoder (good at understanding text), <b>GPT</b> uses just the decoder (good at writing text).",
+ tokNote:"Real tokenizers have tens of thousands of entries and often split long words into smaller pieces, for example \"sleeping\" → \"sleep\" + \"ing\".",
+ sameCard:`"sleeps" and "sleep"`,
+ langName:"English"
+},
+zh:{
+ h1:"拆解 <em>Transformer</em>",
+ lede:"一層一層看一個迷你 Transformer 怎麼把一句話改成問句。頁面上每個數字，都是一個真的訓練過的（非常小的）模型即時算出來的。",
+ langLabel:"語言",
+ diagSummary:"顯示論文的架構圖",diagHead:"架構圖",diagCite:"改繪自 Vaswani 等人，2017 · 圖 1",
+ diagLegend:"<b>橘色</b>表示資料現在的位置，資料由下往上流動。點任何方塊就能跳過去。圖上的標籤保留論文原本的英文名稱。",
+ back:"← 上一步",next:"下一步 →",autoplay:"▶ 自動播放",pause:"❚❚ 暫停",tip:"小提示：可用鍵盤 ← → 切換",railLabel:"步驟",
+ part:{all:"總覽",enc:"編碼器",dec:"解碼器",out:"輸出"},
+ stepOf:(i,n)=>`第 ${i} 步，共 ${n} 步`,
+ q:w=>`「${w}」`,
+ pos:"正數",neg:"負數",legendNote:"顏色越深＝數字越大",
+ follow:"跟著看這個字：",looking:"看向 ↑",hidden:"看不到",
+ ffnIn:"輸入 4 個",ffnHid:n=>`8 個神經元 · ${n} 個亮起`,ffnOut:"輸出 4 個",
+ mean:["文法","動物","動作","哪一個"],
+ nTokens:n=>`${n} 個 token`,nIds:n=>`${n} 個 token ID`,nVec:n=>`${n} 個向量 × 4 個數字`,sameSize:s=>`${s}（大小不變，多了位置）`,
+ sio:"一句話進，一句話出",probs:"機率",repeatEnd:"重複到 <end>",recap:"總整理",
+ embTable:n=>`<b>嵌入表</b>${n} 個詞 × 4 個數字`,ourTokens:n=>`<b>E</b>我們的 ${n} 個 token`,
+ wordMeaning:"<b>E</b>詞義",posStamp:"<b>PE</b>位置戳記",readyEnc:"<b>X</b>準備送進編碼器",
+ peNote:"論文在全部 512 個數字上，使用很多種不同速度的波。我們把戳記縮小一半，讓迷你模型的詞義比較容易看出來。",
+ learned:"學出來的",questions:"問題",labels:"標籤",messages:"訊息",
+ scores:"<b>分數</b>Q·Kᵀ ÷ 2",softmaxRows:"<b>softmax</b>每列加起來 100%",weights:"<b>權重</b>",mixed:"<b>Z</b>混合後的訊息",
+ addUp:"加總",
+ multihead:"「多頭（Multi-head）」是指論文同時跑 8 組這樣的注意力，每組有自己的 Q、K、V 表，最後再把結果合併。我們的迷你模型只用 1 組。",
+ xInput:"<b>X</b>輸入",zAttn:"<b>Z</b>注意力結果",sum:"<b>相加</b>",mean0:"<b>H₁</b>平均 0、分散 1",neurons:"<b>神經元</b>經過 ReLU",
+ encNotes:"<b>編碼器筆記</b>交給解碼器",note:n=>`筆記 ${n}`,toDecoder:"交給每一個解碼器區塊",
+ inList:n=>`迷你模型完整的輸入詞表（${n} 個詞）`,outList:n=>`迷你模型完整的輸出詞表（${n} 個詞）`,
+ rowIn:"輸入",rowGuess:"要猜的字",embedding:"<b>嵌入</b>",position:"<b>位置</b>",decIn:"<b>Y</b>解碼器輸入",
+ maskScores:"<b>加上遮罩的分數</b>",softmax:"<b>softmax</b>",
+ qFromOut:"Q 來自<br>輸出",kvFromEnc:"K、V 來自<br>編碼器筆記",crossW:"<b>權重</b>列＝輸出，欄＝輸入",inMixed:"<b>Z</b>混合後的輸入資訊",
+ crossNoMask:"這裡沒有遮罩：整個輸入句子早就知道了，所以每個輸出位置都可以看全部。",
+ crossMixNote:"這些筆記已經不只代表單一個詞。在第 5 步，編碼器把整句的資訊混在一起，所以一則筆記也可能帶著旁邊詞的線索。點上面其他的字，看看每個字都在看哪裡。",
+ decOut:"<b>解碼器輸出</b>",paperStack:"論文怎麼疊（N = 6）",decBlock:(i,r)=>`解碼器區塊 ${i}${r?" · 本頁計算的這層":""}`,looksNotes:"查看編碼器筆記",
+ logits:"<b>分數（logits）</b>",allPos:"<b>所有位置</b>",
+ genBtn:"▶ 再寫一次",genInput:"輸入：",
+ colIn:"輸入",colOut:"模型輸出",correct:"✓ 正確",wholeTrip:"整趟旅程",colSteps:"步驟",colWhat:"發生什麼事",colShape:"資料形狀",
+ rec:["斷詞","嵌入＋位置","自注意力","Add & Norm、前饋網路、Add & Norm","目前寫出的字，嵌入","遮罩自注意力＋Add & Norm","交叉注意力＋Add & Norm","前饋網路＋Add & Norm","線性層＋Softmax","重複到 &lt;end&gt;"],
+ encNotesShape:"編碼器筆記",
+ sayEnc:(a,p,b)=>`<b>${a}</b>把 <b>${p}%</b> 的注意力給了<b>${b}</b>。`,
+ sayMask:(a,n,p,b)=>`<b>${a}</b>${n===1?"只看得到自己":`看得到 ${n} 個字`}，把 <b>${p}%</b> 給了<b>${b}</b>。`,
+ sayCross:(a,b,p,c)=>`要寫<b>${a}</b>後面的字時，它主要看輸入詞<b>${b}</b>（${p}%）。下一個字應該是<b>${c}</b>。`,
+ sayProb:(a,b,p)=>`在<b>${a}</b>後面，模型猜<b>${b}</b>，機率 ${p}%。`,
+ stEnc:"編碼器",stEncSub:"讀句子、做筆記",stDec:"解碼器",stDecSub:"一次寫一個字",
+ ovHead:["設定","迷你模型","論文的基礎模型"],
+ ovRows:[["每個詞幾個數字（d<sub>model</sub>）","4","512"],["編碼器／解碼器區塊數（N）","1 / 1","6 / 6"],["注意力頭數","1","8"],["每個前饋網路的神經元數","8","2,048"],["訓練資料","4 組句子","約 450 萬組句子"]],
+ ovNote:"隨時可以在頁面最上方切換語言，每種語言都有自己單獨訓練的迷你模型。後來的模型只留下其中一半：<b>BERT</b> 只用編碼器（擅長理解文字），<b>GPT</b> 只用解碼器（擅長寫文字）。",
+ tokNote:"真正的中文分詞器常把單一漢字或短詞當成 token，所以「睡覺」也可能被切成「睡」＋「覺」。",
+ sameCard:"兩邊的「睡覺」",
+ langName:"中文"
+},
+ko:{
+ h1:"<em>Transformer</em> 들여다보기",
+ lede:"작은 Transformer가 문장을 질문으로 바꾸는 과정을 한 층씩 따라가 봅니다. 이 페이지의 모든 숫자는 실제로 학습된 (아주 작은) 모델이 실시간으로 계산한 것입니다.",
+ langLabel:"언어",
+ diagSummary:"논문의 구조도 보기",diagHead:"구조도",diagCite:"Vaswani 외, 2017 · 그림 1을 다시 그림",
+ diagLegend:"<b>주황색</b>은 지금 데이터가 있는 곳입니다. 데이터는 아래에서 위로 흐릅니다. 상자를 누르면 해당 단계로 이동합니다. 라벨은 논문의 원래 영어 용어입니다.",
+ back:"← 이전",next:"다음 단계 →",autoplay:"▶ 자동 재생",pause:"❚❚ 일시정지",tip:"팁: ← → 키로 이동",railLabel:"단계",
+ part:{all:"전체",enc:"인코더",dec:"디코더",out:"출력"},
+ stepOf:(i,n)=>`${n}단계 중 ${i}단계`,
+ q:w=>`"${w}"`,
+ pos:"양수",neg:"음수",legendNote:"색이 진할수록 큰 숫자",
+ follow:"따라갈 단어:",looking:"바라봄 ↑",hidden:"안 보임",
+ ffnIn:"입력 4개",ffnHid:n=>`뉴런 8개 · ${n}개 켜짐`,ffnOut:"출력 4개",
+ mean:["문법","동물","동작","어느 쪽"],
+ nTokens:n=>`토큰 ${n}개`,nIds:n=>`토큰 ID ${n}개`,nVec:n=>`벡터 ${n}개 × 숫자 4개`,sameSize:s=>`${s} (크기는 같고 위치 정보 추가)`,
+ sio:"문장이 들어가고 문장이 나옴",probs:"확률",repeatEnd:"<end>까지 반복",recap:"정리",
+ embTable:n=>`<b>임베딩 표</b>단어 ${n}개 × 숫자 4개`,ourTokens:n=>`<b>E</b>우리의 토큰 ${n}개`,
+ wordMeaning:"<b>E</b>단어 의미",posStamp:"<b>PE</b>위치 도장",readyEnc:"<b>X</b>인코더 입력 준비 완료",
+ peNote:"논문은 512개의 숫자 전체에 여러 속도의 파동을 사용합니다. 여기서는 단어 의미가 잘 보이도록 도장 크기를 절반으로 줄였습니다.",
+ learned:"학습됨",questions:"질문",labels:"라벨",messages:"메시지",
+ scores:"<b>점수</b>Q·Kᵀ ÷ 2",softmaxRows:"<b>소프트맥스</b>각 줄의 합 100%",weights:"<b>가중치</b>",mixed:"<b>Z</b>섞인 메시지",
+ addUp:"합계",
+ multihead:"\"멀티 헤드\"는 논문에서 이런 어텐션을 8개 동시에 돌린다는 뜻입니다. 각각 자기만의 Q, K, V 표를 가지고, 마지막에 결과를 합칩니다. 우리 모델은 1개만 씁니다.",
+ xInput:"<b>X</b>입력",zAttn:"<b>Z</b>어텐션",sum:"<b>합</b>",mean0:"<b>H₁</b>평균 0, 퍼짐 1",neurons:"<b>뉴런</b>ReLU 후",
+ encNotes:"<b>인코더 메모</b>디코더로 전달",note:n=>`메모 ${n}`,toDecoder:"모든 디코더 블록으로",
+ inList:n=>`작은 모델의 전체 입력 단어 목록 (${n}개)`,outList:n=>`작은 모델의 전체 출력 단어 목록 (${n}개)`,
+ rowIn:"입력",rowGuess:"맞혀야 할 단어",embedding:"<b>임베딩</b>",position:"<b>위치</b>",decIn:"<b>Y</b>디코더 입력",
+ maskScores:"<b>마스크 적용 점수</b>",softmax:"<b>소프트맥스</b>",
+ qFromOut:"Q는<br>출력에서",kvFromEnc:"K, V는<br>인코더 메모에서",crossW:"<b>가중치</b>행 = 출력, 열 = 입력",inMixed:"<b>Z</b>섞인 입력 정보",
+ crossNoMask:"여기에는 마스크가 없습니다. 입력 문장은 이미 다 알고 있으니, 모든 출력 위치가 전부 볼 수 있습니다.",
+ crossMixNote:"메모는 이제 단어 하나만의 정보가 아닙니다. 5단계에서 인코더가 문장 전체의 정보를 섞었기 때문에, 메모 하나에 이웃 단어의 단서도 들어 있을 수 있습니다. 위에서 다른 단어를 눌러 각 단어가 어디를 보는지 확인해 보세요.",
+ decOut:"<b>디코더 출력</b>",paperStack:"논문에서 쌓는 방식 (N = 6)",decBlock:(i,r)=>`디코더 블록 ${i}${r?" · 여기서 계산":""}`,looksNotes:"인코더 메모 참고",
+ logits:"<b>점수 (로짓)</b>",allPos:"<b>모든 위치</b>",
+ genBtn:"▶ 다시 쓰기",genInput:"입력:",
+ colIn:"입력",colOut:"모델의 출력",correct:"✓ 정답",wholeTrip:"전체 여정",colSteps:"단계",colWhat:"하는 일",colShape:"데이터 모양",
+ rec:["토큰","임베딩 + 위치","셀프 어텐션","Add & Norm, 피드포워드, Add & Norm","지금까지 쓴 출력, 임베딩","마스크 셀프 어텐션 + Add & Norm","크로스 어텐션 + Add & Norm","피드포워드 + Add & Norm","선형층 + 소프트맥스","&lt;end&gt;까지 반복"],
+ encNotesShape:"인코더 메모",
+ sayEnc:(a,p,b)=>`<b>${a}</b>의 어텐션 중 <b>${p}%</b>가 <b>${b}</b> 쪽으로 갑니다.`,
+ sayMask:(a,n,p,b)=>`<b>${a}</b> 위치에서는 ${n===1?"자기 자신만":`단어 ${n}개를`} 볼 수 있고, 어텐션 <b>${p}%</b>가 <b>${b}</b> 쪽으로 갑니다.`,
+ sayCross:(a,b,p,c)=>`<b>${a}</b> 다음 단어를 쓰기 위해 주로 입력 단어 <b>${b}</b> 쪽을 봅니다(${p}%). 다음 단어는 <b>${c}</b>입니다.`,
+ sayProb:(a,b,p)=>`<b>${a}</b> 다음 단어로 모델은 <b>${b}</b> 쪽을 ${p}% 확률로 고릅니다.`,
+ stEnc:"인코더",stEncSub:"읽고 메모하기",stDec:"디코더",stDecSub:"한 단어씩 쓰기",
+ ovHead:["설정","작은 모델","논문의 기본 모델"],
+ ovRows:[["단어당 숫자 수 (d<sub>model</sub>)","4","512"],["인코더 / 디코더 블록 수 (N)","1 / 1","6 / 6"],["어텐션 헤드 수","1","8"],["피드포워드 층의 뉴런 수","8","2,048"],["학습 데이터","문장 4쌍","약 450만 쌍"]],
+ ovNote:"페이지 맨 위에서 언제든 언어를 바꿀 수 있습니다. 언어마다 따로 학습한 작은 모델이 있습니다. 이후의 모델들은 절반만 남겼습니다. <b>BERT</b>는 인코더만 쓰고(글 이해에 강함), <b>GPT</b>는 디코더만 씁니다(글쓰기에 강함).",
+ tokNote:"실제 한국어 토크나이저도 우리가 고양이와 가를 나눈 것처럼 단어와 조사·어미를 나누는 경우가 많습니다.",
+ sameCard:`"잔다"와 "자니"`,
+ langName:"한국어"
+}};
+
+/* ================= step text ================= */
+const IN=()=>SRC.join(" "), OUT=()=>TGT.join(" ");
+const animalIn=()=>SRC.find(w=>SRC_E[w][1]===1), actionIn=()=>SRC.find(w=>SRC_E[w][2]===1);
+const enc=s=>`<b style="color:var(--enc)">${s}</b>`, dec=s=>`<b style="color:var(--dec)">${s}</b>`;
+const n=()=>SRC.length, m=()=>DIN.length;
+
+const TXT={
+en:[
+ {rail:"Big picture",title:"A sentence goes in, a new sentence comes out",
+  explain:()=>`<p>The 2017 paper <i>Attention Is All You Need</i> used the Transformer to translate between languages. The same machine works for <b>any</b> job where a sentence goes in and a new sentence comes out. Our tiny one has a simple job: <b>turn a sentence into a question</b>.</p><p>We give it <b>"${esc(IN())}"</b> and watch it write <b>"${esc(OUT())}"</b>. The ${enc("encoder")} (left side of the diagram) reads the input and writes notes about it. The ${dec("decoder")} (right side) writes the output one word at a time, checking those notes as it goes.</p>`,
+  analogy:"Like a student rewriting a sentence: first read the whole thing and take notes, then write the new version word by word, glancing at the notes.",io:()=>["a sentence","a question"]},
+ {rail:"Tokens",title:"Cut the sentence into tokens",
+  explain:()=>`<p>A computer can't read words, so first a <b>tokenizer</b> cuts the sentence into pieces called <b>tokens</b>. Each token has an ID number in the model's input word list.</p>`,
+  analogy:"Like looking each word up in a dictionary and writing down its entry number.",io:()=>[`"${esc(IN())}"`,`${n()} token IDs`]},
+ {rail:"Embedding",title:"Turn each token into numbers",
+  explain:()=>`<p>Each token ID picks one row from the <b>embedding table</b>. That row is a short list of numbers, a <b>vector</b>, that describes the word.</p><p>We picked the 4 numbers by hand so you can read them: is it a small <b>grammar</b> word, an <b>animal</b>, an <b>action</b>, and <b>which one</b> (+ for the cat / sleeping words, − for the dog / eating words). A real model learns 512 numbers on its own.</p>`,
+  analogy:"Every word gets a little profile card. Words with similar meanings get similar cards.",io:()=>[`${n()} token IDs`,`${n()} vectors × 4 numbers`]},
+ {rail:"+ Position",title:"Add a position stamp",
+  explain:()=>`<p>Attention, coming next, looks at all words at the same time. Without help it couldn't tell "${esc(IN())}" from "${esc([...SRC].reverse().join(" "))}". So we <b>add a small position pattern</b> to each word's vector.</p><p>The pattern is made from sine and cosine waves, so every position gets its own unique stamp.</p>`,
+  analogy:"Like writing a seat number on each word's profile card.",io:()=>[`${n()} × 4`,`${n()} × 4 (same size, now with position)`]},
+ {rail:"Q · K · V",title:"Each word makes a question, a label and a message",
+  explain:()=>`<p>Now comes <b>self-attention</b>, the heart of the Transformer. Each word turns its vector into three new ones by multiplying with three learned tables:</p><p><b>Query (Q)</b> "what am I looking for?" · <b>Key (K)</b> "what do I have?" · <b>Value (V)</b> "what I'll pass on if you pick me".</p>`,
+  analogy:"A library search: the Query is what you type, each book's Key is its label on the shelf, and its Value is what's inside the book.",io:()=>[`X (${n()} × 4)`,`Q, K, V (each ${n()} × 4)`]},
+ {rail:"Attention",title:"Every word decides who to listen to",
+  explain:()=>`<p>Each word compares its <b>question</b> with every word's <b>label</b> (multiply the matching numbers, add them up, divide by 2). A higher score means "you look useful to me".</p><p><b>Softmax</b> then turns each row of scores into percentages that add up to 100%. In the encoder, every word may look at <b>every</b> word, before or after it.</p>`,
+  analogy:"Each word has 100 attention points to hand out, and gives the most to the words that answer its question best.",io:()=>["Q, K",`attention weights (${n()} × ${n()})`]},
+ {rail:"Mix messages",title:"Mix the messages together",
+  explain:()=>`<p>Each word now collects the <b>messages (V)</b> of the words it listened to, mixed by its attention percentages.</p><p>This is the moment words share information. After this, "${animalIn()}" also carries a bit of "${actionIn()}" inside it, and so on.</p>`,
+  analogy:"Like a smoothie: 60% of one fruit, 30% of another, a little of the rest.",io:()=>["weights + V",`Z (${n()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm: keep the original, tidy up",
+  explain:()=>`<p><b>Add:</b> we add the input X back onto the attention result. This shortcut, called a <b>residual connection</b>, means the word never forgets what it started as.</p><p><b>Norm:</b> <b>LayerNorm</b> rescales each row so its numbers average 0 with a spread of 1. This keeps the numbers from growing too big or too small.</p>`,
+  analogy:"Keep your original notes, staple the new ideas on top, then tidy the page to a standard size.",io:()=>["X + Z",`H₁ (${n()} × 4)`]},
+ {rail:"Feed forward",title:"Each word thinks on its own",
+  explain:()=>`<p>Attention was a group chat. Now each word goes through a small <b>neural network</b> by itself: spread its 4 numbers out to 8 "neurons", switch off any neuron below zero (<b>ReLU</b>), then squeeze back to 4.</p>`,
+  analogy:"After the group meeting, everyone goes back to their own desk to think about what they heard.",io:()=>[`H₁ (${n()} × 4)`,`F (${n()} × 4)`]},
+ {rail:"Encoder notes",title:"Add & Norm again: the encoder's notes are ready",
+  explain:()=>`<p>One more Add & Norm finishes the <b>encoder block</b>. The paper stacks <b>6</b> of these blocks (the <b>N×</b> in the diagram); each one refines the vectors further.</p><p>The result is one vector per input word, each now aware of the whole sentence. These are the encoder's <b>notes</b>, and they go to the decoder.</p>`,
+  analogy:"The student has finished reading and holds a page of notes, one line per word.",io:()=>["H₁ + F",`encoder output (${n()} × 4)`]},
+ {rail:"Shifted right",title:"Decoder input: the words written so far",
+  explain:()=>`<p>The decoder writes the output one word at a time. Its input is <b>what it has written so far</b>, starting with a special <b>&lt;start&gt;</b> token. That's why the diagram says <b>"Outputs (shifted right)"</b>.</p><p>Each position's job is to guess the <b>next</b> word. The last guess should be <b>&lt;end&gt;</b>, meaning "I'm done". Below, we show all positions at once, the way the model is trained. Step 20 shows real word-by-word writing.</p>`,
+  analogy:"Like finishing someone's sentence: after these words, what comes next?",io:()=>["the output so far",`${m()} tokens`]},
+ {rail:"Embed + position",title:"Embed the output words and add positions",
+  explain:()=>`<p>Exactly the same as steps 2 and 3, using the output word list: look up each token's numbers, then add the position stamp.</p><p>In our toy, words that mean the same thing get the same card on both sides (for example ${t("sameCard")}).</p>`,
+  analogy:"New profile cards and seat numbers, this time for the output side.",io:()=>[`${m()} tokens`,`Y (${m()} × 4)`]},
+ {rail:"Masked attention",title:"Masked self-attention: no peeking ahead",
+  explain:()=>`<p>The output words now run self-attention among themselves, just like the encoder did, with one rule: a word may only look at words <b>before</b> it, never after.</p><p>We do this by setting every "future" score to <b>−∞</b> before softmax, which turns it into exactly 0%. Otherwise, during training, the model could just copy the answer from the next position.</p>`,
+  analogy:"Writing an essay with a card covering everything you haven't written yet.",io:()=>["Y",`Z (${m()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm",
+  explain:()=>`<p>Same as before: add the input back (the shortcut), then LayerNorm each row.</p>`,
+  analogy:"Keep the original, add the new ideas, tidy up.",io:()=>["Y + Z",`H₁ (${m()} × 4)`]},
+ {rail:"Cross-attention",title:"Cross-attention: look at the encoder's notes",
+  explain:()=>`<p>This is where the two halves meet. The <b>questions (Q)</b> come from the output words. The <b>labels (K)</b> and <b>messages (V)</b> come from the <b>encoder's notes</b> on the input words.</p><p>So each output position asks: "which input word should I look at to write my next word?"</p>`,
+  analogy:"While writing, the student glances down at the notes to find the matching spot.",io:()=>["output H₁ + encoder notes",`Z (${m()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm",
+  explain:()=>`<p>Add the cross-attention result to its input, then LayerNorm. Each output position now holds both "what I've written" and "what the input says".</p>`,
+  analogy:"Staple the notes onto the draft.",io:()=>["H₁ + Z",`H₂ (${m()} × 4)`]},
+ {rail:"Feed forward",title:"Each output word thinks on its own",
+  explain:()=>`<p>The decoder's own feed-forward network: 4 numbers out to 8 neurons, ReLU, back to 4. Same idea as step 8, with different learned weights.</p>`,
+  analogy:"Back to the desk to think before choosing a word.",io:()=>["H₂",`F (${m()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm: the decoder block is done",
+  explain:()=>`<p>The last Add & Norm finishes the <b>decoder block</b>. In the paper, 6 decoder blocks are stacked, and <b>each one</b> does its own cross-attention to the same encoder notes.</p>`,
+  analogy:"A final, polished draft of each position's thought.",io:()=>["H₂ + F",`decoder output (${m()} × 4)`]},
+ {rail:"Linear",title:"Score every word in the output list",
+  explain:()=>`<p>A <b>Linear</b> layer multiplies each position's vector by a learned table with one column per output word. Out come <b>${TGT_V.length} scores</b> per position, one for every word the model knows. These raw scores are called <b>logits</b>.</p>`,
+  analogy:()=>`Each position holds up its final thought against all ${TGT_V.length} word cards and rates how well each fits.`,io:()=>[`decoder output (${m()} × 4)`,`scores (${m()} × ${TGT_V.length})`]},
+ {rail:"Softmax",title:"Turn scores into chances",
+  explain:()=>`<p><b>Softmax</b> turns each row of scores into probabilities that add up to 100%. The highest one is the model's guess for the next word.</p><p>Read the top guesses from top to bottom: <b>${topWords()}</b>. That's our question.</p>`,
+  analogy:"A vote among all the words. The winner is written down.",io:()=>["scores","probabilities"]},
+ {rail:"Write it",title:"Write the question, one word at a time",
+  explain:()=>`<p>When really used, the model doesn't know the answer yet. It starts with only <b>&lt;start&gt;</b>, runs the whole decoder, takes the top word, adds it to the input, and runs again, until it writes <b>&lt;end&gt;</b>.</p><p>The encoder runs only <b>once</b>; its notes are reused at every step. Press the button to watch it again with live calculations.</p>`,
+  analogy:"Write one word, look at what you've written and your notes, write the next word.",io:()=>["input sentence + &lt;start&gt;","the full question"]},
+ {rail:"How it learned",title:"How it learned, and the whole trip",
+  explain:()=>`<p>All those weight tables (W<sub>Q</sub>, W<sub>K</sub>, W<sub>V</sub>, the feed-forward ones, W<sub>out</sub>) started as random numbers. During <b>training</b>, the model guessed the next word for many example pairs, measured how wrong it was, and nudged every weight a tiny bit to be less wrong. Repeat thousands of times.</p><p>Our English toy was trained on just the 4 pairs below. Here is its live output for each one.</p>`,
+  analogy:"Like practicing flashcards: guess, check the answer, adjust, and try again.",io:()=>["random weights + examples","trained weights"]}
+],
+zh:[
+ {rail:"總覽",title:"一句話進去，一句新的話出來",
+  explain:()=>`<p>2017 年的論文《Attention Is All You Need》用 Transformer 來做翻譯。其實只要是「一句話進去、一句新的話出來」的工作，這台機器都能做。我們的迷你模型只做一件簡單的事：<b>把一句話改成問句</b>。</p><p>我們輸入<b>「${esc(IN())}」</b>，看它寫出<b>「${esc(OUT())}」</b>。${enc("編碼器（Encoder）")}在架構圖左半邊，負責讀輸入、做筆記；${dec("解碼器（Decoder）")}在右半邊，一次寫一個字，邊寫邊看筆記。</p>`,
+  analogy:"就像學生改寫句子：先把整句讀完、做筆記，再一個字一個字寫出新句子，邊寫邊瞄筆記。",io:()=>["一句話","一個問句"]},
+ {rail:"斷詞",title:"把句子切成 token",
+  explain:()=>`<p>電腦看不懂文字，所以先由<b>分詞器（tokenizer）</b>把句子切成一小塊一小塊，叫做 <b>token</b>。每個 token 在模型的輸入詞表裡都有一個編號（ID）。</p>`,
+  analogy:"就像查字典，把每個詞換成它在字典裡的編號。",io:()=>[`「${esc(IN())}」`,`${n()} 個 token ID`]},
+ {rail:"詞嵌入",title:"把每個 token 變成數字",
+  explain:()=>`<p>每個 ID 會從<b>嵌入表（embedding table）</b>拿出一列數字。這列數字就是描述這個詞的<b>向量</b>。</p><p>這 4 個數字是我們手動設定的，方便你看懂：它是不是<b>文法</b>詞、是不是<b>動物</b>、是不是<b>動作</b>，以及<b>是哪一個</b>（＋代表貓／睡覺這一類，−代表狗／吃飯這一類）。真正的模型會自己學出 512 個數字。</p>`,
+  analogy:"每個詞都拿到一張小小的個人檔案卡，意思相近的詞，卡片也長得很像。",io:()=>[`${n()} 個 token ID`,`${n()} 個向量 × 4 個數字`]},
+ {rail:"＋位置",title:"加上位置戳記",
+  explain:()=>`<p>下一步的注意力機制會同時看所有的詞。如果不幫忙，它分不出「${esc(IN())}」和「${esc([...SRC].reverse().join(" "))}」的差別。所以我們在每個詞的向量上<b>加上一個小小的位置圖樣</b>。</p><p>這個圖樣是用正弦、餘弦波做的，每個位置都有獨一無二的戳記。</p>`,
+  analogy:"就像在每張檔案卡上寫座位號碼。",io:()=>[`${n()} × 4`,`${n()} × 4（大小不變，多了位置）`]},
+ {rail:"Q · K · V",title:"每個詞準備一個問題、一個標籤、一則訊息",
+  explain:()=>`<p>接下來是 Transformer 的核心：<b>自注意力（self-attention）</b>。每個詞把自己的向量乘上三張學出來的表，變成三個新向量：</p><p><b>Query（Q）</b>「我在找什麼？」・<b>Key（K）</b>「我有什麼？」・<b>Value（V）</b>「如果你選我，我要傳給你的內容」。</p>`,
+  analogy:"像在圖書館找書：Query 是你輸入的關鍵字，Key 是書背上的標籤，Value 是書裡的內容。",io:()=>[`X（${n()} × 4）`,`Q、K、V（各 ${n()} × 4）`]},
+ {rail:"注意力",title:"每個詞決定要聽誰的",
+  explain:()=>`<p>每個詞拿自己的<b>問題</b>去比對每個詞的<b>標籤</b>（對應的數字相乘、加總，再除以 2）。分數越高，代表「你看起來對我很有用」。</p><p>接著 <b>Softmax</b> 把每一列分數換成加起來等於 100% 的百分比。在編碼器裡，每個詞都可以看<b>所有</b>詞，不管在前面還是後面。</p>`,
+  analogy:"每個詞有 100 點注意力可以分配，最能回答它問題的詞會拿到最多點。",io:()=>["Q、K",`注意力權重（${n()} × ${n()}）`]},
+ {rail:"混合訊息",title:"把訊息混在一起",
+  explain:()=>`<p>每個詞依照自己的注意力百分比，把它聽的那些詞的<b>訊息（V）</b>收集起來混在一起。</p><p>詞與詞就是在這一刻交換資訊的。之後，「${animalIn()}」裡面也帶了一點「${actionIn()}」的資訊，其他詞也一樣。</p>`,
+  analogy:"就像打果汁：60% 這種水果、30% 那種水果，再加一點其他的。",io:()=>["權重＋V",`Z（${n()} × 4）`]},
+ {rail:"Add & Norm",title:"Add & Norm：保留原本的，再整理一下",
+  explain:()=>`<p><b>Add（相加）：</b>把輸入 X 加回注意力的結果上。這條捷徑叫做<b>殘差連接（residual connection）</b>，讓每個詞不會忘記自己原本是什麼。</p><p><b>Norm（正規化）：</b><b>LayerNorm</b> 把每一列重新縮放，讓平均是 0、分散程度是 1，避免數字變得太大或太小。</p>`,
+  analogy:"保留原本的筆記，把新想法釘在上面，再把整頁整理成標準大小。",io:()=>["X＋Z",`H₁（${n()} × 4）`]},
+ {rail:"前饋網路",title:"每個詞自己思考",
+  explain:()=>`<p>注意力像是群組聊天。現在每個詞各自通過一個小小的<b>神經網路</b>：把 4 個數字展開成 8 個「神經元」，小於 0 的神經元關掉（<b>ReLU</b>），再壓回 4 個數字。</p>`,
+  analogy:"開完會之後，每個人回到自己的座位，消化剛剛聽到的內容。",io:()=>[`H₁（${n()} × 4）`,`F（${n()} × 4）`]},
+ {rail:"編碼器筆記",title:"再一次 Add & Norm：編碼器的筆記完成了",
+  explain:()=>`<p>再做一次 Add & Norm，<b>編碼器區塊</b>就完成了。論文把這種區塊疊了 <b>6</b> 層（架構圖上的 <b>N×</b>），每一層都會讓向量更精緻。</p><p>結果是每個輸入詞各一個向量，每一個都已經「知道」整句話。這些就是編碼器的<b>筆記</b>，會交給解碼器。</p>`,
+  analogy:"學生讀完了，手上有一頁筆記，每個詞一行。",io:()=>["H₁＋F",`編碼器輸出（${n()} × 4）`]},
+ {rail:"右移輸入",title:"解碼器的輸入：目前已經寫出的字",
+  explain:()=>`<p>解碼器一次寫一個字。它的輸入是<b>目前已經寫出的內容</b>，開頭是一個特殊的 <b>&lt;start&gt;</b> token。這就是架構圖上寫著 <b>"Outputs (shifted right)"（輸出右移）</b>的原因。</p><p>每個位置的任務都是猜<b>下一個</b>字，最後一個要猜 <b>&lt;end&gt;</b>，代表「寫完了」。下面我們像訓練時一樣，一次顯示所有位置；第 20 步會示範真正一個字一個字寫出來。</p>`,
+  analogy:"就像幫別人接話：說到這裡，下一個字會是什麼？",io:()=>["目前寫出的字",`${m()} 個 token`]},
+ {rail:"嵌入＋位置",title:"把輸出的字嵌入，再加上位置",
+  explain:()=>`<p>和第 2、3 步完全一樣，只是換成輸出詞表：查出每個 token 的數字，再加上位置戳記。</p><p>在我們的迷你模型裡，意思相同的詞在兩邊會拿到一樣的卡片（例如${t("sameCard")}）。</p>`,
+  analogy:"換成輸出這一邊，發新的檔案卡和座位號碼。",io:()=>[`${m()} 個 token`,`Y（${m()} × 4）`]},
+ {rail:"遮罩注意力",title:"遮罩自注意力：不能偷看後面",
+  explain:()=>`<p>輸出的字之間也做自注意力，就跟編碼器一樣，只多了一條規則：每個字只能看<b>前面</b>的字，不能看後面的。</p><p>做法是在 softmax 之前，把所有「未來」的分數設成 <b>−∞</b>，換算後剛好是 0%。不這樣做的話，訓練時模型可以直接偷抄下一個位置的答案。</p>`,
+  analogy:"寫作文時，用一張卡片蓋住還沒寫的部分。",io:()=>["Y",`Z（${m()} × 4）`]},
+ {rail:"Add & Norm",title:"Add & Norm",
+  explain:()=>`<p>跟前面一樣：把輸入加回來（捷徑），再對每一列做 LayerNorm。</p>`,
+  analogy:"保留原本的，加上新想法，再整理一下。",io:()=>["Y＋Z",`H₁（${m()} × 4）`]},
+ {rail:"交叉注意力",title:"交叉注意力：查看編碼器的筆記",
+  explain:()=>`<p>兩半在這裡接起來。<b>問題（Q）</b>來自輸出的字，<b>標籤（K）</b>和<b>訊息（V）</b>則來自<b>編碼器對輸入的筆記</b>。</p><p>所以每個輸出位置都在問：「要寫下一個字，我該看哪個輸入詞？」</p>`,
+  analogy:"學生一邊寫，一邊低頭看筆記，找到對應的地方。",io:()=>["輸出 H₁＋編碼器筆記",`Z（${m()} × 4）`]},
+ {rail:"Add & Norm",title:"Add & Norm",
+  explain:()=>`<p>把交叉注意力的結果加回輸入，再做 LayerNorm。現在每個輸出位置同時帶著「我已經寫了什麼」和「輸入說了什麼」。</p>`,
+  analogy:"把筆記釘在草稿上。",io:()=>["H₁＋Z",`H₂（${m()} × 4）`]},
+ {rail:"前饋網路",title:"每個輸出的字自己思考",
+  explain:()=>`<p>解碼器自己的前饋網路：4 個數字展開成 8 個神經元，經過 ReLU，再壓回 4 個。跟第 8 步的概念一樣，只是學到的權重不同。</p>`,
+  analogy:"回到座位想一想，再決定要寫哪個字。",io:()=>["H₂",`F（${m()} × 4）`]},
+ {rail:"Add & Norm",title:"Add & Norm：解碼器區塊完成",
+  explain:()=>`<p>最後一次 Add & Norm 完成<b>解碼器區塊</b>。論文疊了 6 層解碼器區塊，而且<b>每一層</b>都會對同一份編碼器筆記做自己的交叉注意力。</p>`,
+  analogy:"每個位置的想法都整理成最後的定稿。",io:()=>["H₂＋F",`解碼器輸出（${m()} × 4）`]},
+ {rail:"線性層",title:"幫輸出詞表裡的每個字打分數",
+  explain:()=>`<p><b>線性層（Linear）</b>把每個位置的向量乘上一張學出來的表，表裡每個輸出字各有一欄。結果是每個位置得到 <b>${TGT_V.length} 個分數</b>，模型認識的每個字各一個。這些原始分數叫做 <b>logits</b>。</p>`,
+  analogy:()=>`每個位置拿著最後的想法，和 ${TGT_V.length} 張字卡逐一比對，看哪張最合適。`,io:()=>[`解碼器輸出（${m()} × 4）`,`分數（${m()} × ${TGT_V.length}）`]},
+ {rail:"Softmax",title:"把分數變成機率",
+  explain:()=>`<p><b>Softmax</b> 把每一列分數變成加起來 100% 的機率，最高的那個就是模型猜的下一個字。</p><p>由上往下讀出每一列的第一名：<b>${topWords()}</b>。這就是我們的問句。</p>`,
+  analogy:"所有字一起投票，得票最高的就寫下來。",io:()=>["分數","機率"]},
+ {rail:"寫出來",title:"一次寫一個字，寫出問句",
+  explain:()=>`<p>真正使用時，模型事先不知道答案。它只從 <b>&lt;start&gt;</b> 開始，跑一次整個解碼器，取第一名的字，把它加進輸入，再跑一次，直到寫出 <b>&lt;end&gt;</b>。</p><p>編碼器只跑<b>一次</b>，它的筆記在每一步都重複使用。按下按鈕，再看一次即時計算寫出來的過程。</p>`,
+  analogy:"寫一個字，看看自己寫了什麼和筆記，再寫下一個字。",io:()=>["輸入句子＋&lt;start&gt;","完整的問句"]},
+ {rail:"怎麼學會的",title:"它怎麼學會的，以及整趟旅程",
+  explain:()=>`<p>這些權重表（W<sub>Q</sub>、W<sub>K</sub>、W<sub>V</sub>、前饋網路的表、W<sub>out</sub>）一開始都是隨機數字。<b>訓練</b>時，模型對很多組例句猜下一個字，算出自己錯了多少，再把每個權重往「錯少一點」的方向微調一點點。這樣重複幾千次。</p><p>我們的中文迷你模型只用下面 4 組句子訓練。這是它對每一組的即時輸出。</p>`,
+  analogy:"就像背單字卡：先猜，對答案，修正，再試一次。",io:()=>["隨機權重＋例句","訓練好的權重"]}
+],
+ko:[
+ {rail:"전체 그림",title:"문장이 들어가고, 새 문장이 나온다",
+  explain:()=>`<p>2017년 논문 《Attention Is All You Need》는 Transformer를 번역에 사용했습니다. 하지만 "문장이 들어가고 새 문장이 나오는" 일이라면 무엇이든 같은 방식으로 할 수 있습니다. 우리의 작은 모델은 간단한 일 하나만 합니다. 바로 <b>문장을 질문으로 바꾸기</b>입니다.</p><p><b>"${esc(IN())}"</b>를 넣으면 <b>"${esc(OUT())}"</b>를 쓰는 과정을 따라가 봅시다. ${enc("인코더(Encoder)")}는 구조도의 왼쪽에서 입력을 읽고 메모를 합니다. ${dec("디코더(Decoder)")}는 오른쪽에서 그 메모를 보며 한 단어씩 출력을 씁니다.</p>`,
+  analogy:"문장을 고쳐 쓰는 학생과 같습니다. 먼저 문장 전체를 읽고 메모한 다음, 메모를 보면서 한 단어씩 새 문장을 씁니다.",io:()=>["문장","질문"]},
+ {rail:"토큰",title:"문장을 토큰으로 자르기",
+  explain:()=>`<p>컴퓨터는 글자를 읽지 못하기 때문에, 먼저 <b>토크나이저</b>가 문장을 <b>토큰</b>이라는 조각으로 자릅니다. 각 토큰은 모델의 입력 단어 목록에서 ID 번호를 가지고 있습니다.</p>`,
+  analogy:"사전에서 단어를 찾아 그 번호를 적어 두는 것과 같습니다.",io:()=>[`"${esc(IN())}"`,`토큰 ID ${n()}개`]},
+ {rail:"임베딩",title:"토큰을 숫자로 바꾸기",
+  explain:()=>`<p>각 ID는 <b>임베딩 표</b>에서 한 줄을 골라옵니다. 그 줄이 단어를 설명하는 짧은 숫자 목록, 즉 <b>벡터</b>입니다.</p><p>4개의 숫자는 읽기 쉽도록 직접 정했습니다. <b>문법</b> 단어인지, <b>동물</b>인지, <b>동작</b>인지, 그리고 <b>어느 쪽</b>인지입니다(+는 고양이·자다 쪽, −는 강아지·먹다 쪽). 실제 모델은 512개의 숫자를 스스로 학습합니다.</p>`,
+  analogy:"단어마다 작은 프로필 카드를 받습니다. 뜻이 비슷한 단어는 카드도 비슷합니다.",io:()=>[`토큰 ID ${n()}개`,`벡터 ${n()}개 × 숫자 4개`]},
+ {rail:"+ 위치",title:"위치 도장 찍기",
+  explain:()=>`<p>다음 단계의 어텐션은 모든 단어를 한꺼번에 봅니다. 도움이 없으면 "${esc(IN())}"와 "${esc([...SRC].reverse().join(" "))}"를 구분하지 못합니다. 그래서 각 단어의 벡터에 <b>작은 위치 패턴을 더합니다</b>.</p><p>이 패턴은 사인·코사인 파동으로 만들어서, 위치마다 고유한 도장이 생깁니다.</p>`,
+  analogy:"프로필 카드마다 좌석 번호를 적는 것과 같습니다.",io:()=>[`${n()} × 4`,`${n()} × 4 (크기는 같고 위치 정보 추가)`]},
+ {rail:"Q · K · V",title:"단어마다 질문, 라벨, 메시지를 만든다",
+  explain:()=>`<p>이제 Transformer의 핵심인 <b>셀프 어텐션</b>입니다. 각 단어는 자기 벡터에 학습된 표 세 개를 곱해 새로운 벡터 세 개를 만듭니다.</p><p><b>Query(Q)</b> "나는 무엇을 찾고 있나?" · <b>Key(K)</b> "나는 무엇을 가지고 있나?" · <b>Value(V)</b> "나를 고르면 전해 줄 내용".</p>`,
+  analogy:"도서관 검색과 같습니다. Query는 검색어, Key는 책등의 라벨, Value는 책 안의 내용입니다.",io:()=>[`X (${n()} × 4)`,`Q, K, V (각 ${n()} × 4)`]},
+ {rail:"어텐션",title:"누구의 말을 들을지 정하기",
+  explain:()=>`<p>각 단어는 자신의 <b>질문</b>을 모든 단어의 <b>라벨</b>과 비교합니다(같은 자리의 숫자끼리 곱해서 더한 뒤 2로 나눔). 점수가 높을수록 "너는 나에게 쓸모 있어 보여"라는 뜻입니다.</p><p>그다음 <b>소프트맥스(Softmax)</b>가 각 줄의 점수를 합이 100%인 비율로 바꿉니다. 인코더에서는 모든 단어가 앞뒤 상관없이 <b>모든</b> 단어를 볼 수 있습니다.</p>`,
+  analogy:"단어마다 어텐션 100점을 나눠 줄 수 있고, 자기 질문에 가장 잘 답하는 단어에게 가장 많이 줍니다.",io:()=>["Q, K",`어텐션 가중치 (${n()} × ${n()})`]},
+ {rail:"메시지 섞기",title:"메시지를 섞기",
+  explain:()=>`<p>각 단어는 자신이 귀 기울인 단어들의 <b>메시지(V)</b>를 어텐션 비율대로 섞어서 모읍니다.</p><p>단어끼리 정보를 나누는 순간이 바로 여기입니다. 이제 "${animalIn()}" 안에도 "${actionIn()}"의 정보가 조금 들어 있습니다.</p>`,
+  analogy:"스무디처럼, 한 과일 60%, 다른 과일 30%, 나머지 조금씩 섞는 것과 같습니다.",io:()=>["가중치 + V",`Z (${n()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm: 원래 것을 지키고 정리하기",
+  explain:()=>`<p><b>Add(더하기):</b> 입력 X를 어텐션 결과에 다시 더합니다. 이 지름길을 <b>잔차 연결(residual connection)</b>이라고 하며, 단어가 원래 무엇이었는지 잊지 않게 해 줍니다.</p><p><b>Norm(정규화):</b> <b>LayerNorm</b>이 각 줄을 평균 0, 퍼짐 1이 되도록 다시 맞춥니다. 숫자가 너무 커지거나 작아지는 것을 막아 줍니다.</p>`,
+  analogy:"원래 메모는 그대로 두고, 새 생각을 위에 붙인 뒤, 페이지를 표준 크기로 정리합니다.",io:()=>["X + Z",`H₁ (${n()} × 4)`]},
+ {rail:"피드포워드",title:"단어마다 혼자 생각하기",
+  explain:()=>`<p>어텐션이 단체 대화였다면, 이제 각 단어는 혼자서 작은 <b>신경망</b>을 지나갑니다. 4개의 숫자를 8개의 "뉴런"으로 펼치고, 0보다 작은 뉴런은 끄고(<b>ReLU</b>), 다시 4개로 줄입니다.</p>`,
+  analogy:"회의가 끝나면 각자 자리로 돌아가 들은 내용을 정리합니다.",io:()=>[`H₁ (${n()} × 4)`,`F (${n()} × 4)`]},
+ {rail:"인코더 메모",title:"다시 Add & Norm: 인코더의 메모 완성",
+  explain:()=>`<p>Add & Norm을 한 번 더 하면 <b>인코더 블록</b>이 끝납니다. 논문은 이런 블록을 <b>6</b>개 쌓습니다(구조도의 <b>N×</b>). 블록을 지날 때마다 벡터가 더 다듬어집니다.</p><p>결과는 입력 단어마다 하나씩 있는 벡터이고, 각각이 이제 문장 전체를 알고 있습니다. 이것이 인코더의 <b>메모</b>이며 디코더로 전달됩니다.</p>`,
+  analogy:"학생이 다 읽고 나서, 단어마다 한 줄씩 적힌 메모 한 장을 들고 있습니다.",io:()=>["H₁ + F",`인코더 출력 (${n()} × 4)`]},
+ {rail:"오른쪽 이동",title:"디코더 입력: 지금까지 쓴 단어",
+  explain:()=>`<p>디코더는 한 번에 한 단어씩 씁니다. 입력은 <b>지금까지 쓴 내용</b>이고, 특별한 <b>&lt;start&gt;</b> 토큰으로 시작합니다. 그래서 구조도에 <b>"Outputs (shifted right)"(오른쪽으로 민 출력)</b>라고 적혀 있습니다.</p><p>각 위치의 일은 <b>다음</b> 단어를 맞히는 것이고, 마지막에는 "다 썼다"는 뜻의 <b>&lt;end&gt;</b>를 맞혀야 합니다. 아래는 학습할 때처럼 모든 위치를 한꺼번에 보여 줍니다. 20단계에서 실제로 한 단어씩 쓰는 모습을 볼 수 있습니다.</p>`,
+  analogy:"남의 말을 이어서 끝맺는 것과 같습니다. 여기까지 말했으면 다음 단어는 무엇일까요?",io:()=>["지금까지 쓴 출력",`토큰 ${m()}개`]},
+ {rail:"임베딩 + 위치",title:"출력 단어를 임베딩하고 위치 더하기",
+  explain:()=>`<p>2, 3단계와 똑같고, 출력 단어 목록을 쓴다는 점만 다릅니다. 각 토큰의 숫자를 찾고 위치 도장을 더합니다.</p><p>우리 모델에서는 뜻이 같은 단어가 양쪽에서 같은 카드를 받습니다(예: ${t("sameCard")}).</p>`,
+  analogy:"이번에는 출력 쪽 단어에게 새 프로필 카드와 좌석 번호를 줍니다.",io:()=>[`토큰 ${m()}개`,`Y (${m()} × 4)`]},
+ {rail:"마스크 어텐션",title:"마스크 셀프 어텐션: 앞을 훔쳐보지 않기",
+  explain:()=>`<p>출력 단어들도 인코더처럼 서로 셀프 어텐션을 하지만, 규칙이 하나 있습니다. 각 단어는 자기 <b>앞</b>의 단어만 볼 수 있고, 뒤는 볼 수 없습니다.</p><p>그래서 소프트맥스 전에 "미래" 점수를 모두 <b>−∞</b>로 바꿉니다. 그러면 정확히 0%가 됩니다. 이렇게 하지 않으면 학습할 때 모델이 다음 위치의 정답을 그냥 베낄 수 있습니다.</p>`,
+  analogy:"아직 쓰지 않은 부분을 카드로 가리고 글을 쓰는 것과 같습니다.",io:()=>["Y",`Z (${m()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm",
+  explain:()=>`<p>앞과 같습니다. 입력을 다시 더하고(지름길), 각 줄에 LayerNorm을 합니다.</p>`,
+  analogy:"원래 것을 지키고, 새 생각을 더하고, 정리합니다.",io:()=>["Y + Z",`H₁ (${m()} × 4)`]},
+ {rail:"크로스 어텐션",title:"크로스 어텐션: 인코더의 메모 보기",
+  explain:()=>`<p>두 부분이 만나는 곳입니다. <b>질문(Q)</b>은 출력 단어에서 오고, <b>라벨(K)</b>과 <b>메시지(V)</b>는 입력 단어에 대한 <b>인코더의 메모</b>에서 옵니다.</p><p>그래서 각 출력 위치는 "다음 단어를 쓰려면 어느 입력 단어를 봐야 할까?"라고 묻습니다.</p>`,
+  analogy:"글을 쓰다가 메모를 내려다보며 해당하는 곳을 찾는 것과 같습니다.",io:()=>["출력 H₁ + 인코더 메모",`Z (${m()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm",
+  explain:()=>`<p>크로스 어텐션 결과를 입력에 더하고 LayerNorm을 합니다. 이제 각 출력 위치에는 "내가 쓴 것"과 "입력이 말하는 것"이 함께 들어 있습니다.</p>`,
+  analogy:"메모를 초안에 붙여 둡니다.",io:()=>["H₁ + Z",`H₂ (${m()} × 4)`]},
+ {rail:"피드포워드",title:"출력 단어마다 혼자 생각하기",
+  explain:()=>`<p>디코더만의 피드포워드 신경망입니다. 4개의 숫자를 8개 뉴런으로 펼치고, ReLU를 거쳐, 다시 4개로 줄입니다. 8단계와 같은 방식이고, 학습된 가중치만 다릅니다.</p>`,
+  analogy:"단어를 고르기 전에 자리로 돌아가 한 번 더 생각합니다.",io:()=>["H₂",`F (${m()} × 4)`]},
+ {rail:"Add & Norm",title:"Add & Norm: 디코더 블록 완성",
+  explain:()=>`<p>마지막 Add & Norm으로 <b>디코더 블록</b>이 끝납니다. 논문은 디코더 블록을 6개 쌓고, <b>각 블록마다</b> 같은 인코더 메모에 크로스 어텐션을 합니다.</p>`,
+  analogy:"각 위치의 생각을 최종본으로 정리합니다.",io:()=>["H₂ + F",`디코더 출력 (${m()} × 4)`]},
+ {rail:"선형층",title:"출력 단어 목록의 모든 단어에 점수 매기기",
+  explain:()=>`<p><b>선형층(Linear)</b>은 각 위치의 벡터에, 출력 단어마다 한 열씩 있는 학습된 표를 곱합니다. 그 결과 위치마다 <b>${TGT_V.length}개의 점수</b>가 나옵니다. 모델이 아는 단어마다 하나씩입니다. 이 점수를 <b>로짓(logits)</b>이라고 합니다.</p>`,
+  analogy:()=>`각 위치가 최종 생각을 ${TGT_V.length}장의 단어 카드와 하나씩 맞대어 보고 얼마나 잘 맞는지 매깁니다.`,io:()=>[`디코더 출력 (${m()} × 4)`,`점수 (${m()} × ${TGT_V.length})`]},
+ {rail:"소프트맥스",title:"점수를 확률로 바꾸기",
+  explain:()=>`<p><b>소프트맥스</b>가 각 줄의 점수를 합이 100%인 확률로 바꿉니다. 가장 높은 것이 모델이 고른 다음 단어입니다.</p><p>위에서부터 1등을 읽으면 <b>${topWords()}</b>. 이것이 우리의 질문입니다.</p>`,
+  analogy:"모든 단어가 투표하고, 가장 많이 받은 단어를 적습니다.",io:()=>["점수","확률"]},
+ {rail:"써 보기",title:"한 단어씩 질문 쓰기",
+  explain:()=>`<p>실제로 쓸 때 모델은 답을 미리 알지 못합니다. <b>&lt;start&gt;</b>만 가지고 시작해서 디코더 전체를 돌리고, 1등 단어를 입력에 붙인 뒤 다시 돌립니다. <b>&lt;end&gt;</b>를 쓸 때까지 반복합니다.</p><p>인코더는 <b>한 번만</b> 돌고, 그 메모는 매 단계 다시 쓰입니다. 버튼을 눌러 실시간 계산으로 다시 써 보세요.</p>`,
+  analogy:"한 단어를 쓰고, 지금까지 쓴 것과 메모를 보고, 다음 단어를 씁니다.",io:()=>["입력 문장 + &lt;start&gt;","완성된 질문"]},
+ {rail:"학습 방법",title:"어떻게 배웠을까, 그리고 전체 여정",
+  explain:()=>`<p>이 모든 가중치 표(W<sub>Q</sub>, W<sub>K</sub>, W<sub>V</sub>, 피드포워드 표, W<sub>out</sub>)는 처음에는 무작위 숫자였습니다. <b>학습</b>할 때 모델은 여러 예문에서 다음 단어를 맞혀 보고, 얼마나 틀렸는지 계산한 뒤, 모든 가중치를 덜 틀리는 쪽으로 조금씩 고칩니다. 이것을 수천 번 반복합니다.</p><p>우리 한국어 모델은 아래 4쌍만으로 학습했습니다. 각 문장에 대한 실시간 출력입니다.</p>`,
+  analogy:"단어 카드 공부처럼, 맞혀 보고, 답을 확인하고, 고치고, 다시 합니다.",io:()=>["무작위 가중치 + 예문","학습된 가중치"]}
+]};
+
+/* ================= the toy models =================
+   d_model = 4, 1 encoder block, 1 decoder block, 1 head each, one model per language.
+   Embeddings are hand-picked so they are readable; every other weight
+   was trained on 4 sentence pairs and rounded to 1 decimal. */
+const LANGS={"en":{"src":{"the":[1,0,0,0],"cat":[0,1,0,0.8],"dog":[0,1,0,-0.8],"sleeps":[0,0,1,0.8],"eats":[0,0,1,-0.8]},"tgt":{"<start>":[0.3,0.3,0.3,0.3],"does":[1,0,0,0.6],"the":[1,0,0,0],"cat":[0,1,0,0.8],"dog":[0,1,0,-0.8],"sleep":[0,0,1,0.8],"eat":[0,0,1,-0.8],"?":[1,0,0,-0.6],"<end>":[0,0,0,0]},"pairs":[["the cat sleeps","does the cat sleep ?"],["the dog sleeps","does the dog sleep ?"],["the cat eats","does the cat eat ?"],["the dog eats","does the dog eat ?"]],"w":{"eq":[[-0.4,-2,0.5,1.5],[-0.6,-0.8,-1.4,0.8],[0.3,3,1.1,-2.1],[2.3,-3.9,0.4,-0.1]],"ek":[[-0.6,-3,-0.5,0.2],[0.4,-1.2,-1.6,1.2],[0.9,1.2,0.7,-1.9],[0.3,-3,0.3,1.5]],"ev":[[0.2,-0.2,0.1,0],[0.4,-0.5,0.3,-0.2],[0,0.2,-0.1,-0.2],[0.1,-0.2,0.3,-0.2]],"e1":[[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]],"e2":[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],"sq":[[-0.7,0.2,-0.9,0.3],[-2.5,-0.7,0.3,-1.2],[1,-0.5,-2.7,2.1],[0.3,-2.1,1.2,-0.3]],"sk":[[0,-0.1,1.4,-0.7],[-0.4,1.1,-1.2,1.1],[0.9,-0.6,-1.2,1],[1.5,1.2,-0.9,1.5]],"sv":[[-0.1,0.2,0.4,-0.8],[-0.7,0,-0.1,0.7],[0.1,-0.1,0.2,-0.3],[0.1,0.2,-0.1,-0.2]],"cq":[[0.5,1.7,2.3,-1.5],[-0.2,-0.1,-1.1,0.8],[2,1.4,-2,1.9],[-1.3,-1.5,0.2,-0.3]],"ck":[[-0.8,-1.6,0,0.7],[0.6,1.2,1.8,-0.2],[1.7,0.8,-3,3.3],[-0.7,0,1.8,-1.7]],"cv":[[0,0.1,-0.3,0.1],[0.2,-0.1,-0.2,0],[0,-0.2,0.1,0.2],[-0.2,0,0.4,-0.4]],"d1":[[-0.7,0,0,0,0.7,-0.3,0,-0.2],[0.1,0,0,0,-0.3,0,0,0],[0.5,0,0,0,-0.3,0.4,0,0.2],[0.2,0.1,0,0,-0.1,0.2,0,0.2]],"d2":[[0.2,-0.7,0.3,0.3],[0,0,0,0],[0,0,0,0],[0,0,0,0],[-0.8,0.1,0.6,0.1],[0.1,-0.4,0.2,0.2],[0,0,0,0],[0.1,-0.3,0.1,0.1]],"out":[[0,-1.6,1,1.5,1.5,-1.5,-1.4,-0.8,1.1],[-0.1,0.1,1.2,-1.5,-1.7,0.5,2.3,-2.1,1.3],[0,-0.8,-2.5,1.2,-1,2.1,-0.6,1.7,0.1],[0,2.5,0.3,-1.2,1.1,-1.1,-0.4,1.2,-2.5]]}},"ko":{"src":{"고양이":[0,1,0,0.8],"강아지":[0,1,0,-0.8],"가":[1,0,0,0],"잔다":[0,0,1,0.8],"먹는다":[0,0,1,-0.8]},"tgt":{"<start>":[0.3,0.3,0.3,0.3],"고양이":[0,1,0,0.8],"강아지":[0,1,0,-0.8],"가":[1,0,0,0],"자니":[0,0,1,0.8],"먹니":[0,0,1,-0.8],"?":[1,0,0,-0.6],"<end>":[0,0,0,0]},"pairs":[["고양이 가 잔다","고양이 가 자니 ?"],["강아지 가 잔다","강아지 가 자니 ?"],["고양이 가 먹는다","고양이 가 먹니 ?"],["강아지 가 먹는다","강아지 가 먹니 ?"]],"w":{"eq":[[0,0.6,0.8,-1.8],[0.2,-1.3,0.1,-0.3],[1.1,-0.5,0.5,1],[0.2,-1.4,-1.2,-0.2]],"ek":[[0,-0.1,1.5,0],[-0.3,-1.9,0.1,0.7],[-0.4,0.9,-0.1,-0.7],[0.3,0.9,-1.2,2.2]],"ev":[[0.1,0,0,0],[-0.1,0.1,0,-0.1],[0,0,0,0],[0.1,0,-0.1,0]],"e1":[[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]],"e2":[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],"sq":[[-0.8,1.2,-1.2,-2.3],[0.9,-2,-0.5,0.6],[-0.8,0.3,-1.2,-2],[-1.9,0.5,-0.7,-2.4]],"sk":[[1.8,-0.7,0.5,0.2],[1.6,-1,2.2,2.9],[-1.1,1.6,0.2,-1.9],[0.4,1.5,1.2,0.7]],"sv":[[-0.3,0,0.2,0],[-0.6,-0.4,-0.1,0.6],[-0.1,0.4,0.3,-0.5],[0.1,-0.1,0.2,-0.2]],"cq":[[-0.8,-1.4,1.6,-3.4],[-0.6,0.3,-0.8,0.5],[-1.3,0,1.5,0],[3.8,-1.1,-2.2,0]],"ck":[[-1.7,0.6,1.5,-0.3],[1.3,-0.9,-1.8,0.9],[-0.9,-0.3,0.1,-0.3],[0.6,-1.1,0.1,-1.1]],"cv":[[-0.2,0.3,-0.3,0.2],[0.6,-0.2,-0.1,-0.3],[-0.3,-0.3,0.2,0.3],[-0.1,0.2,0.1,-0.3]],"d1":[[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]],"d2":[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],"out":[[0,-2.1,-0.6,0.1,0.7,2.1,-1.1,1],[0,1.3,-1.1,1.6,-2.1,-0.9,0,1.3],[0,0.2,-0.5,-2.3,1.3,-1.2,2.4,0],[0,0.7,2.2,0.6,0.1,0,-1.3,-2.3]]}},"zh":{"src":{"貓":[0,1,0,0.8],"狗":[0,1,0,-0.8],"在":[1,0,0,0],"睡覺":[0,0,1,0.8],"吃飯":[0,0,1,-0.8]},"tgt":{"<start>":[0.3,0.3,0.3,0.3],"貓":[0,1,0,0.8],"狗":[0,1,0,-0.8],"在":[1,0,0,0],"睡覺":[0,0,1,0.8],"吃飯":[0,0,1,-0.8],"嗎":[1,0,0,0.6],"？":[1,0,0,-0.6],"<end>":[0,0,0,0]},"pairs":[["貓 在 睡覺","貓 在 睡覺 嗎 ？"],["狗 在 睡覺","狗 在 睡覺 嗎 ？"],["貓 在 吃飯","貓 在 吃飯 嗎 ？"],["狗 在 吃飯","狗 在 吃飯 嗎 ？"]],"w":{"eq":[[-1.2,-1,0.4,-0.7],[1.2,0.3,-0.8,-1.7],[-1.5,-1.4,-0.8,-0.4],[-0.4,-1.3,0.2,1.1]],"ek":[[-1.8,-1.3,-0.4,0.2],[0.8,-0.7,-0.7,-1.2],[0.9,0.7,1.5,2],[0.5,-0.1,-0.3,0.7]],"ev":[[0,-0.1,0,0],[0,0,0,0],[0,0,0,0],[0,-0.1,0,0]],"e1":[[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0]],"e2":[[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]],"sq":[[0.7,-1.4,1,0.6],[-2.8,1.2,1.8,-0.4],[1.2,-0.2,-1.2,0.7],[-0.7,1.2,-1.8,-2]],"sk":[[-1.1,1.1,2.2,0.5],[-0.2,-1,1.8,1.1],[0.9,0.5,-1.9,0.9],[-0.7,1.6,-3.3,-1.8]],"sv":[[0,0,-0.1,0],[-0.1,0.1,0,-0.3],[-0.1,0,0,0.1],[0,0,-0.1,-0.1]],"cq":[[0.2,0,0.1,-0.1],[-2.1,-3,1.1,0.2],[-0.2,1.1,-0.5,1.7],[1.6,1,-0.7,-0.3]],"ck":[[-0.3,-0.6,-0.9,-1.1],[-1.6,-1.5,-0.6,0],[1.9,1.5,-1.1,-1.2],[-0.4,0.8,-0.8,-0.1]],"cv":[[0,0,0.1,-0.1],[0.1,-0.2,-0.4,0.4],[-0.1,0,0.2,-0.2],[0,0.1,0,-0.2]],"d1":[[-0.1,0,0.2,0,0,0.7,0,0.1],[-0.7,-0.1,0.1,0,0.4,-0.2,0,0.1],[0.2,0,-0.1,0,-0.8,0.1,0,-0.4],[0.5,0.1,-0.2,0,0.3,-0.7,0,0.3]],"d2":[[0.2,0.4,0.1,-0.8],[0,0.1,0,-0.1],[-0.2,-0.1,0.2,0.1],[0,0,0,0],[0.1,-0.5,0.6,-0.4],[-0.8,0.2,-0.2,0.6],[0,0,0,0],[0.1,-0.2,0.4,-0.3]],"out":[[0,-1.6,-2.1,1.2,-0.8,0.2,-0.8,1.9,2],[0,1.9,-0.2,1.2,1.4,-1.6,-0.7,-2,0],[0,0.4,0.8,0,-1.7,-0.5,2.5,0.7,-2.2],[0,-0.8,1.5,-2.4,1.2,2,-1.1,-0.6,0.2]]}}};
+let W,SRC_V,SRC_E,TGT_V,TGT_E,PAIRS,SRC,TGT,DIN,DOUT,M,SL,TL,lang="en";
+var fS=1,fT=1;
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const t=(k,...a)=>{const v=UI[lang][k];return typeof v==="function"?v(...a):v};
+const Q=w=>t("q",esc(w));
+
+const mm=(A,B)=>A.map(r=>B[0].map((_,j)=>r.reduce((s,v,k)=>s+v*B[k][j],0)));
+const T=A=>A[0].map((_,j)=>A.map(r=>r[j]));
+const add=(A,B)=>A.map((r,i)=>r.map((v,j)=>v+B[i][j]));
+const softmax=r=>{const m=Math.max(...r.filter(isFinite));const e=r.map(v=>isFinite(v)?Math.exp(v-m):0);const s=e.reduce((a,b)=>a+b);return e.map(v=>v/s)};
+const ln=r=>{const m=r.reduce((a,b)=>a+b)/r.length;const v=r.reduce((a,b)=>a+(b-m)**2,0)/r.length;return r.map(x=>(x-m)/Math.sqrt(v+1e-5))};
+const PE=n=>Array.from({length:n},(_,p)=>[0.5*Math.sin(p),0.5*Math.cos(p),0.5*Math.sin(p/100),0.5*Math.cos(p/100)]);
+function attn(Xq,Xkv,Wq,Wk,Wv,mask){const Q=mm(Xq,Wq),K=mm(Xkv,Wk),V=mm(Xkv,Wv);
+  const S=mm(Q,T(K)).map(r=>r.map(v=>v/2));const Sm=S.map((r,i)=>r.map((v,j)=>mask&&j>i?-Infinity:v));
+  const A=Sm.map(softmax);return {Q,K,V,S,Sm,A,Z:mm(A,V)}}
+function ffn(H,W1,W2){const pre=mm(H,W1);const hid=pre.map(r=>r.map(v=>Math.max(0,v)));return {pre,hid,F:mm(hid,W2)}}
+function run(src,tgtIn){
+  const r={};r.E=src.map(t=>SRC_E[t]);r.PE=PE(src.length);r.X=add(r.E,r.PE);
+  r.ea=attn(r.X,r.X,W.eq,W.ek,W.ev,false);r.eR1=add(r.X,r.ea.Z);r.eH1=r.eR1.map(ln);
+  r.ef=ffn(r.eH1,W.e1,W.e2);r.eR2=add(r.eH1,r.ef.F);r.enc=r.eR2.map(ln);
+  r.D=tgtIn.map(t=>TGT_E[t]);r.dPE=PE(tgtIn.length);r.Y=add(r.D,r.dPE);
+  r.sa=attn(r.Y,r.Y,W.sq,W.sk,W.sv,true);r.dR1=add(r.Y,r.sa.Z);r.dH1=r.dR1.map(ln);
+  r.ca=attn(r.dH1,r.enc,W.cq,W.ck,W.cv,false);r.dR2=add(r.dH1,r.ca.Z);r.dH2=r.dR2.map(ln);
+  r.df=ffn(r.dH2,W.d1,W.d2);r.dR3=add(r.dH2,r.df.F);r.dec=r.dR3.map(ln);
+  r.logits=mm(r.dec,W.out);r.P=r.logits.map(softmax);return r}
+const argmax=a=>a.indexOf(Math.max(...a));
+function setLang(k){
+  lang=k;const L=LANGS[k];W=L.w;SRC_E=L.src;SRC_V=Object.keys(SRC_E);TGT_E=L.tgt;TGT_V=Object.keys(TGT_E);PAIRS=L.pairs;
+  SRC=PAIRS[0][0].split(" ");TGT=PAIRS[0][1].split(" ");DIN=["<start>",...TGT];DOUT=[...TGT,"<end>"];
+  M=run(SRC,DIN);
+  SL=SRC.map((w,i)=>`${esc(w)} <small>#${i+1}</small>`);TL=DIN.map((w,i)=>`${esc(w)} <small>#${i+1}</small>`);
+  fS=SRC.findIndex(w=>SRC_E[w][1]===1);
+  let best=1,bv=0;for(let i=1;i<DIN.length;i++){const v=Math.max(...M.ca.A[i]);if(v>bv){bv=v;best=i}}fT=best;
+}
+const topWords=()=>M.P.map(p=>esc(TGT_V[argmax(p)])).join(" → ");
+
+/* ================= rendering helpers ================= */
+const fmt=v=>!isFinite(v)?"−∞":(v<-0.004?"−":"")+Math.abs(v).toFixed(2);
+const DL=["d1","d2","d3","d4"];
+let stagger=0;
+function cellBg(v,max){if(!isFinite(v))return "";const p=Math.min(1,Math.abs(v)/max)*72;
+  return `background:color-mix(in oklab, var(${v>=0?"--pos":"--neg"}) ${p.toFixed(0)}%, var(--cell))`}
+function mat(Mx,o={}){
+  const rl=o.rl||Mx.map((_,i)=>i+1), cl=o.cl||Mx[0].map((_,j)=>j+1);
+  const max=o.max||Math.max(...Mx.flat().filter(isFinite).map(Math.abs),0.01);
+  let h=`<div class="mwrap"><div class="mat">${o.title?`<div class="mtitle">${o.title}</div>`:""}<div class="mgrid" style="grid-template-columns:auto repeat(${cl.length},minmax(var(--cellw),1fr))"><span></span>`;
+  cl.forEach(c=>h+=`<span class="cl">${c}</span>`);
+  Mx.forEach((r,i)=>{
+    h+=`<span class="rl ${o.hlRow===i?"row-hl":""}">${rl[i]}</span>`;
+    r.forEach((v,j)=>{const masked=!isFinite(v);
+      const hl=(o.hlCell&&o.hlCell[0]===i&&o.hlCell[1]===j)||(o.hlCells&&o.hlCells.some(c=>c[0]===i&&c[1]===j));
+      h+=`<span class="c ${masked?"masked":""} ${hl?"hl":""}" style="--i:${Math.min(stagger++,60)};${cellBg(v,max)}">${o.pct&&!masked?(v*100).toFixed(0)+"%":fmt(v)}</span>`});
+  });
+  return h+`</div></div></div>`;
+}
+const eq=(...parts)=>`<div class="eq">${parts.map(p=>p.length<4?`<span class="op" aria-hidden="true">${p}</span>`:p).join("")}</div>`;
+const legend=()=>`<div class="legend"><span><i class="sw" style="background:var(--pos)"></i>${t("pos")}</span><span><i class="sw" style="background:var(--neg)"></i>${t("neg")}</span><span>${t("legendNote")}</span></div>`;
+const v4=a=>"["+a.map(fmt).join(", ")+"]";
+const tok=(w,cls,i,sub)=>`<div class="tok ${cls}" style="--i:${i}"><span class="w">${esc(w)}</span>${sub?`<span class="id">${sub}</span>`:""}</div>`;
+const picker=(side)=>{const L=side==="s"?SRC:DIN,f=side==="s"?fS:fT;
+  return `<div class="focus-pick"><span>${t("follow")}</span>${L.map((w,i)=>`<button type="button" class="chip" data-f="${side}${i}" aria-pressed="${i===f}">${esc(w)} #${i+1}</button>`).join("")}</div>`};
+const narrowQ=matchMedia("(max-width: 640px)");
+
+/* who-looks-at-whom picture: bottom row looks up at the top row */
+function links(A,qL,kL,f,qColor,kColor,label){
+  const small=narrowQ.matches,w=small?360:600,h=170,pad=small?40:56,n=kL.length,m=qL.length;
+  const kx=j=>n===1?w/2:pad+j*(w-2*pad)/(n-1), qx=i=>m===1?w/2:pad+i*(w-2*pad)/(m-1);
+  const a=A[f],fs=small?13:15;
+  let s=`<svg class="links" viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px" role="img" aria-label="${esc(label)}">`;
+  a.forEach((v,j)=>{if(v<0.005)return;
+    s+=`<path class="draw" style="--i:${j}" d="M${qx(f)} 128 C${qx(f)} 90, ${kx(j)} 90, ${kx(j)} 50" fill="none" stroke="var(--accent)" stroke-linecap="round" stroke-width="${(1+v*14).toFixed(1)}" opacity="${(0.25+v*0.75).toFixed(2)}"/>`});
+  kL.forEach((w2,j)=>{const hid=!isFinite(A.masked?A.masked[f][j]:0);
+    s+=`<text x="${kx(j)}" y="24" text-anchor="middle" font-size="${fs}" font-weight="600" fill="var(${hid?"--muted":kColor})">${esc(w2)}</text><text x="${kx(j)}" y="41" text-anchor="middle" font-size="11" fill="var(--muted)">${hid?t("hidden"):(a[j]*100).toFixed(0)+"%"}</text>`});
+  qL.forEach((w2,i)=>{s+=`<text x="${qx(i)}" y="150" text-anchor="middle" font-size="${fs}" font-weight="${i===f?700:500}" fill="var(${i===f?"--accent":qColor})" opacity="${i===f?1:.45}">${esc(w2)}</text>`});
+  s+=`<text x="4" y="166" font-size="10" fill="var(--muted)">${t("looking")}</text>`;
+  return s+`</svg>`;
+}
+function ffnSvg(inp,hid,out,W1,W2,label){
+  const w=560,h=250,xs=[80,280,480];
+  const ys=n=>Array.from({length:n},(_,i)=>28+i*(h-60)/(n-1));const y4=ys(4),y8=ys(8);
+  const mx=v=>Math.max(...v.map(Math.abs),.01);
+  let s=`<svg viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px" role="img" aria-label="${esc(label)}">`;let k=0;
+  y4.forEach((ya,i)=>y8.forEach((yb,j)=>{const wv=W1[i][j];s+=`<line class="draw" style="--i:${k++%12}" x1="${xs[0]}" y1="${ya}" x2="${xs[1]}" y2="${yb}" stroke="var(${wv>=0?"--pos":"--neg"})" stroke-width="1.2" opacity="${Math.min(.9,Math.abs(wv)*0.4).toFixed(2)}"/>`}));
+  y8.forEach((ya,i)=>y4.forEach((yb,j)=>{const wv=W2[i][j];const on=hid[i]>0;s+=`<line class="draw" style="--i:${12+(k++%12)}" x1="${xs[1]}" y1="${ya}" x2="${xs[2]}" y2="${yb}" stroke="var(${wv>=0?"--pos":"--neg"})" stroke-width="1.2" opacity="${on?Math.min(.9,Math.abs(wv)*0.5).toFixed(2):0.05}"/>`}));
+  const node=(x,y,v,m)=>{const p=Math.min(1,Math.abs(v)/m)*80;
+    return `<circle cx="${x}" cy="${y}" r="13" fill="color-mix(in oklab, var(${v>=0?"--pos":"--neg"}) ${p.toFixed(0)}%, var(--surface))" stroke="var(--ink)" stroke-width="1.2"/><text x="${x+(x>400?20:-20)}" y="${y+4}" text-anchor="${x>400?"start":"end"}" font-size="12" fill="var(--muted)">${fmt(v)}</text>`};
+  inp.forEach((v,i)=>s+=node(xs[0],y4[i],v,mx(inp)));
+  hid.forEach((v,i)=>s+=`<circle cx="${xs[1]}" cy="${y8[i]}" r="11" fill="color-mix(in oklab, var(--accent) ${v>0?(30+v/mx(hid)*60).toFixed(0):0}%, var(--surface))" stroke="${v>0?"var(--accent)":"var(--line)"}" stroke-width="1.4"/>`);
+  out.forEach((v,i)=>s+=node(xs[2],y4[i],v,mx(out)));
+  s+=`<text x="${xs[0]}" y="${h-4}" text-anchor="middle" font-size="12" fill="var(--muted)">${t("ffnIn")}</text><text x="${xs[1]}" y="${h-4}" text-anchor="middle" font-size="12" fill="var(--muted)">${t("ffnHid",hid.filter(v=>v>0).length)}</text><text x="${xs[2]}" y="${h-4}" text-anchor="middle" font-size="12" fill="var(--muted)">${t("ffnOut")}</text>`;
+  return s+`</svg>`;
+}
+const topOf=(A,i)=>{let b=0;A[i].forEach((v,j)=>{if(v>A[i][b])b=j});return b};
+const NEUR=[1,2,3,4,5,6,7,8].map(i=>"n"+i);
+const pc=v=>(v*100).toFixed(0);
+
+/* ================= steps: structure + visuals (text lives in TXT) ================= */
+const n_=()=>SRC.length, m_=()=>DIN.length;
+const STEPS=[
+{part:"all",shape:()=>t("sio"),
+ viz(){return `<div class="flow">${SRC.map((w,i)=>tok(w,"fr",i)).join("")}<span class="op">→</span>
+   <div class="stagebox e" style="--i:3">${t("stEnc")}<small>${t("stEncSub")}</small></div><span class="op">→</span>
+   <div class="stagebox d" style="--i:4">${t("stDec")}<small>${t("stDecSub")}</small></div><span class="op">→</span>
+   <div class="flow">${TGT.map((w,i)=>tok(w,"en",i+5)).join("")}</div></div>
+  <div class="mwrap"><table class="shapes"><thead><tr>${t("ovHead").map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${t("ovRows").map(r=>`<tr><td>${r[0]}</td><td class="m">${r[1]}</td><td class="m">${r[2]}</td></tr>`).join("")}</tbody></table></div>
+  <div class="note">${t("ovNote")}</div>`}},
+{part:"enc",shape:()=>t("nTokens",n_()),
+ viz(){return `<div class="tokens">${SRC.map((w,i)=>tok(w,"fr",i,"ID "+SRC_V.indexOf(w))).join("")}</div>
+  <div class="mtitle">${t("inList",SRC_V.length)}</div>
+  <div class="tokens">${SRC_V.map((w,i)=>tok(w,SRC.includes(w)?"fr":"",i+3,"ID "+i)).join("")}</div>
+  <div class="note">${t("tokNote")}</div>`}},
+{part:"enc",shape:()=>`${n_()} × 4`,
+ viz(){return eq(mat(SRC_V.map(w=>SRC_E[w]),{title:t("embTable",SRC_V.length),rl:SRC_V.map((w,i)=>`${i} ${esc(w)}`),cl:t("mean"),max:1}),"→",
+   mat(M.E,{title:t("ourTokens",n_()),rl:SL,cl:t("mean"),max:1}))+legend()}},
+{part:"enc",shape:()=>`${n_()} × 4`,
+ viz(){return eq(mat(M.E,{title:t("wordMeaning"),rl:SL,cl:DL}),"+",mat(M.PE,{title:t("posStamp"),rl:SL,cl:DL}),"=",mat(M.X,{title:t("readyEnc"),rl:SL,cl:DL}))+
+  `<div class="calc">PE(pos) = ½ × [ sin(pos), cos(pos), sin(pos/100), cos(pos/100) ]</div><div class="note">${t("peNote")}</div>`+legend()}},
+{part:"enc",shape:()=>`3 × (${n_()} × 4)`,
+ viz(){const row=(Wm,sub,name,res)=>eq(`<span class="mtitle">X ×</span>`,mat(Wm,{title:`<b>W<sub>${sub}</sub></b>${t("learned")}`,rl:DL,cl:DL}),"=",mat(res,{title:`<b>${sub}</b>${t(name)}`,rl:SL,cl:DL}));
+  return row(W.eq,"Q","questions",M.ea.Q)+row(W.ek,"K","labels",M.ea.K)+row(W.ev,"V","messages",M.ea.V)+legend()}},
+{part:"enc",shape:()=>`${n_()} × ${n_()}`,focus:"s",
+ viz(){const A=M.ea.A,b=topOf(A,fS),q=M.ea.Q[fS],k=M.ea.K[b];
+  return picker("s")+`<div class="say">${t("sayEnc",Q(SRC[fS]),pc(A[fS][b]),Q(SRC[b]))}</div>`+links(A,SRC,SRC,fS,"--enc","--enc","Encoder attention")+
+  eq(mat(M.ea.S,{title:t("scores"),rl:SL,cl:SRC.map(esc),hlRow:fS,hlCell:[fS,b]}),"→",mat(A,{title:t("softmaxRows"),rl:SL,cl:SRC.map(esc),pct:true,max:1,hlRow:fS,hlCell:[fS,b]}))+
+  `<div class="calc">${q.map((v,i)=>`${fmt(v)}×${fmt(k[i])}`).join(" + ")} = ${fmt(M.ea.S[fS][b]*2)} &nbsp;→ ÷ 2 = <span class="a">${fmt(M.ea.S[fS][b])}</span></div>`}},
+{part:"enc",shape:()=>`${n_()} × 4`,focus:"s",
+ viz(){const a=M.ea.A[fS];
+  return picker("s")+`<div class="calc">${a.map((w,j)=>`<span class="a">${pc(w).padStart(3," ")}%</span> × V(${esc(SRC[j])}) ${v4(M.ea.V[j])}`).join("<br>")}<br>──────────────────────────<br>${t("addUp")} → Z(${esc(SRC[fS])}) = <span class="a">${v4(M.ea.Z[fS])}</span></div>`+
+  eq(mat(M.ea.A,{title:t("weights"),rl:SL,cl:SRC.map(esc),pct:true,max:1,hlRow:fS}),"×",mat(M.ea.V,{title:"<b>V</b>",rl:SL,cl:DL}),"=",mat(M.ea.Z,{title:t("mixed"),rl:SL,cl:DL,hlRow:fS}))+
+  `<div class="note">${t("multihead")}</div>`}},
+{part:"enc",shape:()=>`${n_()} × 4`,
+ viz(){return eq(mat(M.X,{title:t("xInput"),rl:SL,cl:DL}),"+",mat(M.ea.Z,{title:t("zAttn"),rl:SL,cl:DL}),"=",mat(M.eR1,{title:t("sum"),rl:SL,cl:DL}))+
+  eq(`<span class="mtitle">LayerNorm →</span>`,mat(M.eH1,{title:t("mean0"),rl:SL,cl:DL}))+legend()}},
+{part:"enc",shape:()=>`${n_()} × 4 → ${n_()} × 8 → ${n_()} × 4`,focus:"s",
+ viz(){return picker("s")+ffnSvg(M.eH1[fS],M.ef.hid[fS],M.ef.F[fS],W.e1,W.e2,"Encoder feed-forward network")+
+  eq(mat(M.eH1,{title:"<b>H₁</b>",rl:SL,cl:DL,hlRow:fS}),"→",mat(M.ef.hid,{title:t("neurons"),rl:SL,cl:NEUR,hlRow:fS}),"→",mat(M.ef.F,{title:"<b>F</b>",rl:SL,cl:DL,hlRow:fS}))}},
+{part:"enc",shape:()=>`${n_()} × 4`,
+ viz(){return eq(mat(M.eH1,{title:"<b>H₁</b>",rl:SL,cl:DL}),"+",mat(M.ef.F,{title:"<b>F</b>",rl:SL,cl:DL}),"=",`<span class="mtitle">LayerNorm →</span>`,mat(M.enc,{title:t("encNotes"),rl:SL,cl:DL}))+
+  `<div class="flow">${SRC.map((w,i)=>tok(w,"fr",i,t("note",i+1))).join("")}<span class="op">→</span><div class="stagebox d" style="--i:4">${t("toDecoder")}</div></div>`+legend()}},
+{part:"dec",shape:()=>t("nTokens",m_()),
+ viz(){return `<div class="mwrap"><div class="shift" style="grid-template-columns:auto repeat(${m_()},minmax(4.2em,1fr));max-width:${130+m_()*90}px"><span class="h">${t("rowIn")}</span>${DIN.map((w,i)=>`<span class="cell" style="--i:${i}">${esc(w)}</span>`).join("")}
+  <span></span>${DIN.map(()=>`<span class="arr">↓</span>`).join("")}
+  <span class="h">${t("rowGuess")}</span>${DOUT.map((w,i)=>`<span class="cell t" style="--i:${i+m_()}">${esc(w)}</span>`).join("")}</div></div>
+  <div class="mtitle">${t("outList",TGT_V.length)}</div>
+  <div class="tokens">${TGT_V.map((w,i)=>tok(w,w[0]==="<"?"special":"en",i+8,"ID "+i)).join("")}</div>`}},
+{part:"dec",shape:()=>`${m_()} × 4`,
+ viz(){return eq(mat(M.D,{title:t("embedding"),rl:TL,cl:t("mean"),max:1}),"+",mat(M.dPE,{title:t("position"),rl:TL,cl:DL}),"=",mat(M.Y,{title:t("decIn"),rl:TL,cl:DL}))+legend()}},
+{part:"dec",shape:()=>`${m_()} × ${m_()}`,focus:"t",
+ viz(){const A=M.sa.A;A.masked=M.sa.Sm;const b=topOf(A,fT);
+  return picker("t")+`<div class="say">${t("sayMask",Q(DIN[fT]),fT+1,pc(A[fT][b]),Q(DIN[b]))}</div>`+links(A,DIN,DIN,fT,"--dec","--dec","Masked self-attention")+
+  eq(mat(M.sa.Sm,{title:t("maskScores"),rl:TL,cl:DIN.map(esc),hlRow:fT,max:Math.max(...M.sa.S.flat().map(Math.abs))}),"→",mat(A,{title:t("softmax"),rl:TL,cl:DIN.map(esc),pct:true,max:1,hlRow:fT}),"→",mat(M.sa.Z,{title:t("mixed"),rl:TL,cl:DL,hlRow:fT}))}},
+{part:"dec",shape:()=>`${m_()} × 4`,
+ viz(){return eq(mat(M.Y,{title:"<b>Y</b>",rl:TL,cl:DL}),"+",mat(M.sa.Z,{title:"<b>Z</b>",rl:TL,cl:DL}),"=",`<span class="mtitle">LayerNorm →</span>`,mat(M.dH1,{title:"<b>H₁</b>",rl:TL,cl:DL}))+legend()}},
+{part:"dec",shape:()=>`${m_()} × ${n_()}`,focus:"t",
+ viz(){const A=M.ca.A,b=topOf(A,fT);
+  return picker("t")+`<div class="say">${t("sayCross",Q(DIN[fT]),Q(SRC[b]),pc(A[fT][b]),Q(DOUT[fT]))}</div>`+
+  links(A,DIN,SRC,fT,"--dec","--enc","Cross-attention")+
+  eq(`<span class="mtitle">${t("qFromOut")}</span>`,mat(M.ca.Q,{title:"<b>Q</b>= H₁ × W<sub>Q</sub>",rl:TL,cl:DL,hlRow:fT}),`<span class="mtitle">${t("kvFromEnc")}</span>`,mat(M.ca.K,{title:"<b>K</b>",rl:SL,cl:DL}),mat(M.ca.V,{title:"<b>V</b>",rl:SL,cl:DL}))+
+  eq(mat(A,{title:t("crossW"),rl:TL,cl:SRC.map(esc),pct:true,max:1,hlRow:fT,hlCell:[fT,b]}),"→",mat(M.ca.Z,{title:t("inMixed"),rl:TL,cl:DL,hlRow:fT}))+
+  `<div class="note">${t("crossNoMask")}</div><div class="note">${t("crossMixNote")}</div>`}},
+{part:"dec",shape:()=>`${m_()} × 4`,
+ viz(){return eq(mat(M.dH1,{title:"<b>H₁</b>",rl:TL,cl:DL}),"+",mat(M.ca.Z,{title:"<b>Z</b>",rl:TL,cl:DL}),"=",`<span class="mtitle">LayerNorm →</span>`,mat(M.dH2,{title:"<b>H₂</b>",rl:TL,cl:DL}))+legend()}},
+{part:"dec",shape:()=>`${m_()} × 4 → ${m_()} × 8 → ${m_()} × 4`,focus:"t",
+ viz(){return picker("t")+ffnSvg(M.dH2[fT],M.df.hid[fT],M.df.F[fT],W.d1,W.d2,"Decoder feed-forward network")+
+  eq(mat(M.dH2,{title:"<b>H₂</b>",rl:TL,cl:DL,hlRow:fT}),"→",mat(M.df.hid,{title:t("neurons"),rl:TL,cl:NEUR,hlRow:fT}),"→",mat(M.df.F,{title:"<b>F</b>",rl:TL,cl:DL,hlRow:fT}))}},
+{part:"dec",shape:()=>`${m_()} × 4`,
+ viz(){let st=`<div class="stack">`;for(let i=0;i<6;i++)st+=`<div class="blk ${i===0?"real":""}" style="--i:${i}"><span>${t("decBlock",i+1,i===0)}</span><b>${t("looksNotes")}</b></div>`;st+=`</div>`;
+  return eq(mat(M.dH2,{title:"<b>H₂</b>",rl:TL,cl:DL}),"+",mat(M.df.F,{title:"<b>F</b>",rl:TL,cl:DL}),"=",`<span class="mtitle">LayerNorm →</span>`,mat(M.dec,{title:t("decOut"),rl:TL,cl:DL}))+`<div class="mtitle">${t("paperStack")}</div>`+st}},
+{part:"out",shape:()=>`${m_()} × 4 → ${m_()} × ${TGT_V.length}`,
+ viz(){return eq(mat(M.dec,{title:t("decOut"),rl:TL,cl:DL}),"×",mat(W.out,{title:`<b>W<sub>out</sub></b>${t("learned")}`,rl:DL,cl:TGT_V.map(esc)}))+
+  mat(M.logits,{title:t("logits"),rl:TL,cl:TGT_V.map(esc),hlCells:M.logits.map((r,i)=>[i,argmax(r)])})+legend()}},
+{part:"out",shape:()=>`${m_()} × ${TGT_V.length} ${t("probs")}`,focus:"t",
+ viz(){const p=M.P[fT],order=TGT_V.map((w,i)=>[w,p[i]]).sort((a,b)=>b[1]-a[1]),max=order[0][1];
+  return picker("t")+`<div class="say">${t("sayProb",Q(DIN[fT]),Q(order[0][0]),(order[0][1]*100).toFixed(1))}</div>
+  <div class="bars">${order.map(([w,q],i)=>`<div class="bar ${i===0?"win":""}"><span>${esc(w)}</span><span class="t"><i data-w="${(q/max*100).toFixed(1)}"></i></span><span class="p">${(q*100).toFixed(1)}%</span></div>`).join("")}</div>`+
+  mat(M.P,{title:t("allPos"),rl:TL,cl:TGT_V.map(esc),pct:true,max:1,hlRow:fT,hlCells:M.P.map((r,i)=>[i,argmax(r)])})},
+ after(){requestAnimationFrame(()=>requestAnimationFrame(()=>document.querySelectorAll(".bar i").forEach(i=>i.style.width=i.dataset.w+"%")))}},
+{part:"out",shape:()=>t("repeatEnd"),
+ viz(){return `<div><button type="button" class="btn primary" id="genbtn">${t("genBtn")}</button></div><div class="sentence" id="gensent" aria-live="polite"></div><div class="genlog" id="genlog"></div>`},
+ after(){startGen()}},
+{part:"all",shape:()=>t("recap"),
+ viz(){const rows=PAIRS.map(([s,tg])=>{const tt=tg.split(" "),r=run(s.split(" "),["<start>",...tt]);const out=r.P.map(p=>TGT_V[argmax(p)]);const ok=out.join(" ")===[...tt,"<end>"].join(" ");
+   return `<tr><td class="m" style="color:var(--enc)">${esc(s)}</td><td class="m" style="color:var(--dec)">${esc(out.join(" "))}</td><td class="${ok?"ok":""}">${ok?t("correct"):"✗"}</td></tr>`}).join("");
+  const R=t("rec"),sh=[`${n_()} ID`,`${n_()} × 4`,`${n_()} × 4`,`${n_()} × 4`,`${m_()} × 4`,`${m_()} × 4`,`${m_()} × 4`,`${m_()} × 4`,`${m_()} × ${TGT_V.length}`,Q(TGT.join(" "))],nums=["1","2–3","4–6","7–9","10–11","12–13","14–15","16–17","18–19","20"];
+  return `<div class="mwrap"><table class="shapes"><thead><tr><th>${t("colIn")}</th><th>${t("colOut")}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+  <div class="mtitle">${t("wholeTrip")}</div><div class="mwrap"><table class="shapes"><thead><tr><th>${t("colSteps")}</th><th>${t("colWhat")}</th><th>${t("colShape")}</th></tr></thead><tbody>${R.map((r,i)=>`<tr><td class="m">${nums[i]}</td><td><span style="color:var(${i<4?"--enc":i<8?"--dec":"--accent"});font-weight:600">${t("part")[i<4?"enc":i<8?"dec":"out"]}</span> · ${r}</td><td class="m">${sh[i]}</td></tr>`).join("")}</tbody></table></div>`}}
+];
+const txt=i=>TXT[lang][i];
+const val=v=>typeof v==="function"?v():v;
+
+/* ================= live generation ================= */
+let genToken=0;
+function startGen(){const btn=document.getElementById("genbtn");if(!btn)return;btn.onclick=()=>{stopPlay();runGen()};runGen()}
+function runGen(){
+  const my=++genToken,log=document.getElementById("genlog"),sent=document.getElementById("gensent");
+  if(!log)return;log.innerHTML="";sent.innerHTML=`<span style="color:var(--muted)">…</span>`;
+  const seq=["<start>"];const delay=matchMedia("(prefers-reduced-motion: reduce)").matches?0:1100;
+  const step=()=>{
+    if(my!==genToken||!document.getElementById("genlog"))return;
+    const r=run(SRC,seq),p=r.P[seq.length-1],k=argmax(p),w=TGT_V[k];
+    log.insertAdjacentHTML("beforeend",`<div class="genrow"><span class="k">#${seq.length}</span><span class="gi">${t("genInput")} ${seq.map(esc).join(" ")}</span><span>→ <span class="pick">${esc(w)}</span> <span class="k">${pc(p[k])}%</span></span></div>`);
+    if(w!=="<end>")seq.push(w);
+    sent.innerHTML=seq.slice(1).map((x,i)=>`<span class="${i===seq.length-2&&w!=="<end>"?"new":""}">${esc(x)}</span>`).join("")+(w==="<end>"?` <span class="new" style="color:var(--muted);font-size:.6em">&lt;end&gt; ✓</span>`:"");
+    if(w!=="<end>"&&seq.length<9)setTimeout(step,delay);
+  };
+  setTimeout(step,delay?400:0);
+}
+
+/* ================= interactive paper diagram ================= */
+const BOX=[ // target, x, y, w, h, label lines, fill, active-on
+ ["19",250,34,140,24,["Softmax"],"soft","19"],["18",250,72,140,24,["Linear"],"lin","18"],
+ ["17",250,126,140,22,["Add & Norm"],"norm","17"],["16",250,162,140,36,["Feed","Forward"],"ff","16"],
+ ["15",250,214,140,22,["Add & Norm"],"norm","15"],["14",250,250,140,40,["Multi-Head","Attention"],"attn","14"],
+ ["13",250,316,140,22,["Add & Norm"],"norm","13"],["12",250,352,140,40,["Masked","Multi-Head","Attention"],"attn","12"],
+ ["11",250,452,140,26,["Output Embedding"],"emb","11"],
+ ["9",40,224,140,22,["Add & Norm"],"norm","9"],["8",40,260,140,36,["Feed","Forward"],"ff","8"],
+ ["7",40,316,140,22,["Add & Norm"],"norm","7"],["4",40,352,140,40,["Multi-Head","Attention"],"attn","4 5 6"],
+ ["2",40,452,140,26,["Input Embedding"],"emb","2"]
+];
+const ARR=[
+ ["M320 34 V22","19 20"],["M320 72 V58","19"],["M320 126 V96","18"],["M320 162 V148","17"],
+ ["M320 214 V198","16"],["M320 250 V236","15"],["M320 316 V304 H350 V290","14"],["M320 352 V338","13"],
+ ["M320 418 V397 H290 V392","12"],["M320 418 V392","12"],["M320 418 V397 H350 V392","12"],
+ ["M320 397 H244 V327 H250","13"],["M320 304 H244 V225 H250","15"],["M320 206 H244 V137 H250","17"],
+ ["M320 452 V438","11"],["M320 494 V478","11"],
+ ["M110 352 V338","7"],["M110 316 V296","8"],["M110 260 V246","9"],
+ ["M110 418 V397 H80 V392","4 5"],["M110 418 V392","4 5"],["M110 418 V397 H140 V392","4 5 6"],
+ ["M110 397 H34 V327 H40","7"],["M110 306 H34 V235 H40","9"],
+ ["M110 452 V438","3"],["M110 494 V478","2"],
+ ["M110 224 V196 H215 V296 H280 V290","9 14"],["M215 296 H300 V290","9 14"]
+];
+const svg=document.getElementById("paper");
+function buildDiagram(){
+  const tip=k=>esc(txt(+k).title);
+  let s=`<defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9z" fill="var(--muted)"/></marker><marker id="ah-on" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 1 L9 5 L0 9z" fill="var(--accent)"/></marker></defs>`;
+  const frame=(k,x,y,w,h,act)=>`<g class="box frame" data-t="${k}" data-act="${act}" tabindex="0" role="button" aria-label="${tip(k)}"><title>${tip(k)}</title><rect class="halo" x="${x-4}" y="${y-4}" width="${w+8}" height="${h+8}" rx="13"/><rect class="body" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"/></g>`;
+  s+=frame("17",236,112,168,290,"17")+frame("9",26,210,168,192,"9");
+  s+=`<g>`+ARR.map(([d,act])=>`<path class="ar" data-act="${act}" d="${d}" marker-end="url(#ah)"/>`).join("")+`<path class="ar loop" data-act="20" d="M386 16 H430 V510 H392" marker-end="url(#ah)"/></g>`;
+  BOX.forEach(([k,x,y,w,h,lines,f,act])=>{const cy=y+h/2-(lines.length-1)*6+4;
+    s+=`<g class="box" data-t="${k}" data-act="${act}" tabindex="0" role="button" aria-label="${lines.join(" ")}: ${tip(k)}"><title>${tip(k)}</title><rect class="halo" x="${x-5}" y="${y-5}" width="${w+10}" height="${h+10}" rx="9"/><rect class="body" x="${x}" y="${y}" width="${w}" height="${h}" rx="5" fill="var(--f-${f})"/>${lines.map((l,i)=>`<text class="lbl" x="${x+w/2}" y="${cy+i*12}" text-anchor="middle">${l}</text>`).join("")}</g>`});
+  const pe=(k,cx,act,lx,anchor)=>`<g class="box" data-t="${k}" data-act="${act}" tabindex="0" role="button" aria-label="Positional Encoding: ${tip(k)}"><title>${tip(k)}</title><circle class="halo" cx="${cx}" cy="428" r="16"/><circle class="body" cx="${cx}" cy="428" r="10" fill="var(--surface)"/><path d="M${cx-6} 428 H${cx+6} M${cx} 422 V434" stroke="var(--ink)" stroke-width="1.4"/><path d="M${anchor==="end"?lx-32:lx} 411 q4 -8 8 0 t8 0 t8 0 t8 0" fill="none" stroke="var(--muted)" stroke-width="1.2"/><text class="small" x="${lx}" y="424" text-anchor="${anchor}">Positional</text><text class="small" x="${lx}" y="436" text-anchor="${anchor}">Encoding</text></g>`;
+  s+=pe("11",320,"11",338,"start")+pe("3",110,"3",92,"end");
+  const lab=(k,x,y,tx,act)=>`<g class="box" data-t="${k}" data-act="${act}" tabindex="0" role="button" aria-label="${tx}: ${tip(k)}"><title>${tip(k)}</title><rect class="halo" x="${x-70}" y="${y-13}" width="140" height="18" rx="5"/><rect class="body ghost" x="${x-70}" y="${y-13}" width="140" height="18" rx="5" fill="transparent"/><text class="lbl" x="${x}" y="${y}" text-anchor="middle">${tx}</text></g>`;
+  s+=lab("19",320,16,"Output Probabilities","19 20")+lab("10",320,510,"Outputs (shifted right)","10 20")+lab("1",110,510,"Inputs","0 1");
+  s+=`<g class="box" data-t="17" data-act="17 21" tabindex="0" role="button" aria-label="N×: ${tip(17)}"><title>${tip(17)}</title><rect class="halo" x="404" y="246" width="30" height="22" rx="5"/><text class="nx" x="408" y="262">N×</text></g>`;
+  s+=`<g class="box" data-t="9" data-act="9 21" tabindex="0" role="button" aria-label="N×: ${tip(9)}"><title>${tip(9)}</title><rect class="halo" x="0" y="296" width="24" height="22" rx="5"/><text class="nx" x="22" y="312" text-anchor="end">N×</text></g>`;
+  s+=`<text class="side" x="30" y="205" style="fill:var(--enc)">ENCODER</text><text class="side" x="240" y="107" style="fill:var(--dec)">DECODER</text><g id="dots"></g>`;
+  svg.innerHTML=s;
+}
+function pickBox(g){stopPlay();go(+g.dataset.t);if(narrow.matches)document.querySelector(".stage").scrollIntoView({behavior:"smooth",block:"start"})}
+svg.addEventListener("click",e=>{const g=e.target.closest("[data-t]");if(g)pickBox(g)});
+svg.addEventListener("keydown",e=>{if(e.key!=="Enter"&&e.key!==" ")return;const g=e.target.closest("[data-t]");if(g){e.preventDefault();pickBox(g)}});
+const reduce=matchMedia("(prefers-reduced-motion: reduce)");
+function updateDiagram(key){
+  svg.querySelectorAll("[data-act]").forEach(el=>{const on=el.dataset.act.split(" ").includes(key);
+    el.classList.toggle("on",on);if(el.tagName==="path")el.setAttribute("marker-end",on?"url(#ah-on)":"url(#ah)")});
+  const dots=document.getElementById("dots");
+  if(reduce.matches){dots.innerHTML="";return}
+  dots.innerHTML=[...svg.querySelectorAll("path.ar.on")].map((p,i)=>`<circle class="dot" r="3.6"><animateMotion dur="1.5s" begin="${(i%3)*0.25}s" repeatCount="indefinite" path="${p.getAttribute("d")}"/></circle>`).join("");
+}
+
+/* ================= navigation + language ================= */
+const rail=document.getElementById("rail");
+function buildRail(){
+  let h="",last="";
+  STEPS.forEach((s,i)=>{if(s.part!==last){h+=`<span class="chap" style="color:var(${s.part==="enc"?"--enc":s.part==="dec"?"--dec":s.part==="out"?"--accent":"--muted"})">${t("part")[s.part]}</span>`;last=s.part}
+    h+=`<button type="button" class="node" data-s="${i}"><span class="n">${i}</span><span>${txt(i).rail}</span></button>`});
+  rail.innerHTML=h;rail.setAttribute("aria-label",t("railLabel"));
+}
+rail.addEventListener("click",e=>{const b=e.target.closest(".node");if(b){stopPlay();go(+b.dataset.s)}});
+let cur=0;
+function render(){
+  const s=STEPS[cur],x=txt(cur);stagger=0;genToken++;
+  const part=document.getElementById("part");part.className="part p-"+s.part;part.textContent=t("part")[s.part];
+  document.getElementById("stepno").textContent=t("stepOf",cur,STEPS.length-1);
+  document.getElementById("shape").textContent=val(s.shape);
+  document.getElementById("title").textContent=x.title;
+  const io=val(x.io);
+  document.getElementById("explain").innerHTML=val(x.explain)+`<p class="analogy">${val(x.analogy)}</p>`+(io?`<div class="io"><span><b>In</b>${io[0]}</span><span><b>Out</b>${io[1]}</span></div>`:"");
+  document.getElementById("viz").innerHTML=s.viz();
+  if(s.after)s.after();
+  updateDiagram(String(cur));
+  rail.querySelectorAll(".node").forEach(b=>{const i=+b.dataset.s;b.classList.toggle("on",i===cur);b.classList.toggle("done",i<cur);
+    if(i===cur)b.setAttribute("aria-current","step");else b.removeAttribute("aria-current");
+    if(i===cur&&narrow.matches)rail.scrollTo({left:b.offsetLeft-rail.clientWidth/2+b.offsetWidth/2,behavior:"smooth"})});
+  document.getElementById("prev").disabled=cur===0;
+  document.getElementById("next").disabled=cur===STEPS.length-1;
+  document.getElementById("bar").style.width=(cur/(STEPS.length-1)*100)+"%";
+}
+function go(i){cur=Math.max(0,Math.min(STEPS.length-1,i));render()}
+document.getElementById("viz").addEventListener("click",e=>{const c=e.target.closest(".chip");if(!c)return;
+  const side=c.dataset.f[0],i=+c.dataset.f.slice(1);if(side==="s")fS=i;else fT=i;stopPlay();const y=window.scrollY;render();window.scrollTo(0,y)});
+document.getElementById("prev").onclick=()=>{stopPlay();go(cur-1)};
+document.getElementById("next").onclick=()=>{stopPlay();go(cur+1)};
+let timer=null;const playBtn=document.getElementById("play");
+function stopPlay(){clearInterval(timer);timer=null;playBtn.textContent=t("autoplay");playBtn.setAttribute("aria-pressed","false")}
+playBtn.onclick=()=>{if(timer){stopPlay();return}if(cur===STEPS.length-1)go(0);
+  playBtn.textContent=t("pause");playBtn.setAttribute("aria-pressed","true");
+  timer=setInterval(()=>{if(cur>=STEPS.length-1){stopPlay();return}go(cur+1)},9000)};
+document.addEventListener("keydown",e=>{if(e.target.closest("input,textarea"))return;
+  if(e.key==="ArrowRight"){stopPlay();go(cur+1)}if(e.key==="ArrowLeft"){stopPlay();go(cur-1)}});
+const det=document.getElementById("diag"),narrow=matchMedia("(max-width: 900px)");
+const syncDet=()=>{det.open=!narrow.matches};narrow.addEventListener("change",()=>{syncDet();render()});syncDet();
+narrowQ.addEventListener("change",()=>render());
+
+const HTMLLANG={en:"en",zh:"zh-Hant-TW",ko:"ko"};
+const langBtns=document.querySelectorAll("#langs button");
+function applyLang(k){
+  if(!LANGS[k])k="zh";setLang(k);
+  document.documentElement.lang=HTMLLANG[k];
+  document.querySelectorAll("[data-i]").forEach(el=>{el.innerHTML=t(el.dataset.i)});
+  document.getElementById("langs").setAttribute("aria-label",t("langLabel"));
+  langBtns.forEach(b=>b.setAttribute("aria-pressed",b.dataset.l===k));
+  document.getElementById("exbox").innerHTML=`<span class="fr">${esc(SRC.join(" "))}</span><span aria-hidden="true">→</span><span class="en">${esc(TGT.join(" "))}</span>`;
+  playBtn.textContent=timer?t("pause"):t("autoplay");
+  try{localStorage.setItem("tf-lang",k)}catch(e){}
+  buildRail();buildDiagram();
+}
+langBtns.forEach(b=>b.onclick=()=>{stopPlay();applyLang(b.dataset.l);render()});
+function initialLang(){
+  const h=location.hash.slice(1);if(LANGS[h])return h;
+  try{const s=localStorage.getItem("tf-lang");if(s&&LANGS[s])return s}catch(e){}
+  const nl=(navigator.language||"").toLowerCase();
+  return nl.startsWith("ko")?"ko":nl.startsWith("zh")?"zh":nl.startsWith("en")?"en":"zh";
+}
+window.addEventListener("hashchange",()=>{const h=location.hash.slice(1);if(LANGS[h]&&h!==lang){stopPlay();applyLang(h);render()}});
+applyLang(initialLang());render();
+
+</script>
+
+</body></html>
